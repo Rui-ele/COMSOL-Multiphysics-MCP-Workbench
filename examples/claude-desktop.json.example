@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "comsol": {
+      "command": "/ABSOLUTE/PATH/TO/comsol-mcp-workbench/.venv/bin/python",
+      "args": ["-m", "src.server"],
+      "cwd": "/ABSOLUTE/PATH/TO/comsol-mcp-workbench",
+      "env": {
+        "COMSOL_MCP_DATA_DIR": "/ABSOLUTE/PATH/TO/local-comsol-mcp-data",
+        "COMSOL_MCP_REPORT_DIR": "/ABSOLUTE/PATH/TO/local-comsol-mcp-data/simulation_reports",
+        "COMSOL_MCP_COMSOL_VERSION": "6.4"
+      }
+    }
+  }
+}

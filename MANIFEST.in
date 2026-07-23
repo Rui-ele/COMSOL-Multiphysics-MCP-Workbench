@@ -1,0 +1,5 @@
+include .env.example
+include README_CN.md
+include RELEASE_CONTENTS.md
+recursive-include examples *
+recursive-include scripts *.py

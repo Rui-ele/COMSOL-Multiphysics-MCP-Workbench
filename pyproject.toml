@@ -1,0 +1,48 @@
+[project]
+name = "comsol-mcp-workbench"
+version = "0.1.0"
+description = "Reusable MCP server for safe COMSOL Multiphysics automation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+dependencies = [
+    "mcp>=1.0.0",
+    "mph>=1.3.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+knowledge = [
+    "pymupdf>=1.24.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+]
+dev = [
+    "build>=1.2.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "setuptools>=64",
+]
+
+[project.scripts]
+comsol-mcp = "src.server:main"
+comsol-mcp-doctor = "src.doctor:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.knowledge" = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires a local COMSOL installation and an available license",
+]

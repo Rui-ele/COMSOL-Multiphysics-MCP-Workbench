@@ -1,0 +1,47 @@
+# Python environments and build products
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pytest-real/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.mcp.json
+.codex/
+
+# COMSOL models and generated artifacts
+*.mph
+*.mph.autosave
+*.class
+*.status
+*.recovery
+comsol_models/
+simulation_reports/
+.comsol-mcp-data/
+
+# Documentation search inputs and generated indexes
+pdf/
+knowledge_base/
+*.db
+*.pdf
+*.sqlite3
+
+# Runtime logs and local release evidence
+*.log
+server_*.txt
+local_acceptance/
