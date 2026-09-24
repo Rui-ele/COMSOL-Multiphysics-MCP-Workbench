@@ -4,9 +4,7 @@
 COMSOL Desktop 连接同一个多客户端 COMSOL Server，并共同操作服务器内存中的
 同一模型。
 
-项目希望解决的业务问题及专家、AI 的协作分工，见[项目目的](docs/project-purpose.md)；
-保密与操作约束、可选技术路线见[硬约束与方案比较](docs/constraints-and-options.md)。
-双向任务协议、项目级执行环境和任务状态管理见[目标架构与任务编排](docs/architecture-and-orchestration.md)。
+项目目的、硬约束、可选技术方案及目标架构与任务编排，见[AI 辅助 COMSOL 方案汇报材料](docs/comsol-proposal.md)。
 
 ## 主要能力
 
