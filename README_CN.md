@@ -4,7 +4,8 @@
 COMSOL Desktop 连接同一个多客户端 COMSOL Server，并共同操作服务器内存中的
 同一模型。
 
-项目希望解决的业务问题及专家、AI 的协作分工，见[项目目的](docs/project-purpose.md)。
+项目希望解决的业务问题及专家、AI 的协作分工，见[项目目的](docs/project-purpose.md)；
+保密与操作约束、可选技术路线见[硬约束与方案比较](docs/constraints-and-options.md)。
 
 ## 主要能力
 
