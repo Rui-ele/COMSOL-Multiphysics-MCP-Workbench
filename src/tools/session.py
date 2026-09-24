@@ -3,6 +3,7 @@
 import atexit
 import logging
 import socket
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -202,6 +203,7 @@ class SessionManager:
         self._session_mode: Optional[str] = None
         self._host: Optional[str] = None
         self._port: Optional[int] = None
+        self._connection_token: Optional[str] = None
         self._models: dict[str, ModelRecord] = {}
         self._current_model_tag: Optional[str] = None
         self._busy_handler = None
@@ -245,6 +247,11 @@ class SessionManager:
     @property
     def session_mode(self) -> Optional[str]:
         return self._session_mode
+
+    @property
+    def connection_token(self) -> Optional[str]:
+        """Local generation changed whenever this MCP reconnects to a Server."""
+        return self._connection_token
 
     @staticmethod
     def _is_port_available(port: int) -> bool:
@@ -550,6 +557,7 @@ class SessionManager:
             self._session_mode = "shared-managed"
             self._host = "localhost"
             self._port = server.port
+            self._connection_token = uuid.uuid4().hex
             self._configure_busy_handler()
 
             result = self._session_summary()
@@ -567,6 +575,7 @@ class SessionManager:
             self._session_mode = None
             self._host = None
             self._port = None
+            self._connection_token = None
             return {"success": False, "error": str(exc)}
 
     def connect(self, port: int, host: str = "localhost") -> dict:
@@ -593,12 +602,14 @@ class SessionManager:
             self._session_mode = "shared-external"
             self._host = host
             self._port = port
+            self._connection_token = uuid.uuid4().hex
             self._configure_busy_handler()
             return self._session_summary()
         except Exception as exc:
             self._session_mode = None
             self._host = None
             self._port = None
+            self._connection_token = None
             return {"success": False, "error": str(exc)}
 
     def disconnect(self, force: bool = False) -> dict:
@@ -606,6 +617,7 @@ class SessionManager:
         if not self.is_connected and self._server is None:
             self._models.clear()
             self._current_model_tag = None
+            self._connection_token = None
             return {"success": True, "message": "No active session."}
 
         managed = self._server_managed
@@ -649,6 +661,7 @@ class SessionManager:
         self._session_mode = None
         self._host = None
         self._port = None
+        self._connection_token = None
         self._models.clear()
         self._current_model_tag = None
         self._busy_handler = None

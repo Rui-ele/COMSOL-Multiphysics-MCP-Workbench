@@ -21,6 +21,7 @@ READ_ONLY_MODEL_TOOLS = frozenset(
         "model_set_current",
         "param_get",
         "param_list",
+        "task_parameter_preview",
         "geometry_list",
         "geometry_list_features",
         "mesh_list",

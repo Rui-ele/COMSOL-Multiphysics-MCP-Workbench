@@ -104,7 +104,7 @@ def summarize_value(value: Any, *, max_items: int = 20, depth: int = 0) -> Any:
         summarized = {}
         for key, item in value.items():
             key_text = str(key)
-            if any(secret in key_text.lower() for secret in ("password", "token", "secret")):
+            if any(secret in key_text.lower() for secret in ("password", "token", "secret", "confirmation_code")):
                 summarized[key_text] = "<已隐藏>"
             else:
                 summarized[key_text] = summarize_value(
@@ -227,10 +227,17 @@ class AuditRecorder:
         }
         with self._lock:
             record["sequence"] = len(self._records) + 1
-            self._records.append(record)
-            self.journal_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.journal_path.open("a", encoding="utf-8") as handle:
+            self.journal_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.journal_path.parent.chmod(0o700)
+            flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(self.journal_path, flags, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            self._records.append(record)
         return record
 
     def pending_records(self) -> list[dict[str, Any]]:

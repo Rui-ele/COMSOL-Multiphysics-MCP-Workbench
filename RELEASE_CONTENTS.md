@@ -4,6 +4,8 @@
 
 - `src/`: MCP server, tools, resources, access control, reporting, and embedded
   text guidance.
+- `AGENTS.md`, `.agents/skills/`, and `docs/`: project task rules, the
+  parameter workflow, and its versioned protocol.
 - `tests/`: unit and contract tests; the real COMSOL test is opt-in.
 - `scripts/`: bootstrap, knowledge-base build, release audit, and real
   two-client acceptance.

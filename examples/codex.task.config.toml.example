@@ -1,0 +1,13 @@
+[mcp_servers.comsol_tasks]
+command = "/ABSOLUTE/PATH/TO/comsol-mcp-workbench/.venv/bin/python"
+args = ["-m", "src.task_server"]
+cwd = "/ABSOLUTE/PATH/TO/comsol-mcp-workbench"
+startup_timeout_sec = 30
+tool_timeout_sec = 180
+enabled = true
+required = false
+default_tools_approval_mode = "writes"
+
+[mcp_servers.comsol_tasks.env]
+COMSOL_MCP_DATA_DIR = "/ABSOLUTE/PATH/TO/local-comsol-mcp-data"
+COMSOL_MCP_COMSOL_VERSION = "6.4"

@@ -27,6 +27,8 @@ dev = [
 
 [project.scripts]
 comsol-mcp = "src.server:main"
+comsol-mcp-task = "src.task_server:main"
+comsol-task-approve = "src.task_approval:main"
 comsol-mcp-doctor = "src.doctor:main"
 
 [build-system]
