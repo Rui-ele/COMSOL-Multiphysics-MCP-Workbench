@@ -20,14 +20,8 @@ def environment_python(venv: Path) -> Path:
     return venv / "bin" / "python"
 
 
-def install_target(*, dev: bool, knowledge: bool) -> str:
-    extras = []
-    if dev:
-        extras.append("dev")
-    if knowledge:
-        extras.append("knowledge")
-    suffix = f"[{','.join(extras)}]" if extras else ""
-    return f".{suffix}"
+def install_target(*, dev: bool) -> str:
+    return ".[dev]" if dev else "."
 
 
 def planned_commands(
@@ -35,7 +29,6 @@ def planned_commands(
     python: Path,
     venv: Path,
     dev: bool,
-    knowledge: bool,
     upgrade_pip: bool,
 ) -> list[list[str]]:
     venv_python = environment_python(venv)
@@ -51,7 +44,7 @@ def planned_commands(
             "pip",
             "install",
             "-e",
-            install_target(dev=dev, knowledge=knowledge),
+            install_target(dev=dev),
         ]
     )
     return commands
@@ -63,7 +56,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--venv", type=Path, default=PROJECT_ROOT / ".venv")
-    parser.add_argument("--knowledge", action="store_true")
     parser.add_argument("--no-dev", action="store_true")
     parser.add_argument("--no-pip-upgrade", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -80,7 +72,6 @@ def main(argv: list[str] | None = None) -> int:
         python=python,
         venv=venv,
         dev=not args.no_dev,
-        knowledge=args.knowledge,
         upgrade_pip=not args.no_pip_upgrade,
     )
     if args.dry_run:

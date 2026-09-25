@@ -24,8 +24,6 @@ IGNORED_DIRECTORIES = {
 FORBIDDEN_DIRECTORIES = {
     ".comsol-mcp-data",
     "comsol_models",
-    "knowledge_base",
-    "pdf",
     "simulation_reports",
 }
 FORBIDDEN_SUFFIXES = {

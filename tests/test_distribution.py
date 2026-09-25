@@ -17,14 +17,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_bootstrap_extras_are_explicit(tmp_path):
-    assert install_target(dev=False, knowledge=False) == "."
-    assert install_target(dev=True, knowledge=False) == ".[dev]"
-    assert install_target(dev=True, knowledge=True) == ".[dev,knowledge]"
+    assert install_target(dev=False) == "."
+    assert install_target(dev=True) == ".[dev]"
     commands = planned_commands(
         python=Path(sys.executable),
         venv=tmp_path / ".venv",
         dev=True,
-        knowledge=False,
         upgrade_pip=False,
     )
     assert commands[-1][-2:] == ["-e", ".[dev]"]

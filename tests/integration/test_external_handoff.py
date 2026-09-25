@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = PROJECT_ROOT / "scripts" / "verify_external_handoff.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = Path(__file__).with_name("handoff_runner.py")
 
 
 @pytest.mark.integration
@@ -47,17 +47,19 @@ def test_real_two_client_external_model_handoff(tmp_path):
     assert report["server_cores"] == 1
     assert report["server_port"] != 2036
     assert report["model"]["file"] is None
-    assert report["model"]["final_file"] is None
-    assert report["model_never_saved"] is True
+    assert report["model"]["save_location_after_copy"] is None
+    assert report["model"]["final_exists"] is False
+    assert report["model_removed"] is True
+    assert report["saved_file"]["size_bytes"] > 0
     assert report["values"] == {
         "initial": "1",
-        "after_observe_denial": "1",
         "after_write": "42",
         "after_detach": "42",
         "after_mcp_disconnect": "42",
     }
-    assert report["forbidden_file_exists"] is False
-    assert report["audit"]["required_events"] == 4
+    assert report["audit"]["required_events"] == 3
+    assert "handoff_value" in report["handoff_report"]
+    assert "42" in report["handoff_report"]
     assert report["cleanup"] == {
         "server_running_after_mcp_disconnect": True,
         "client_a_stopped": True,

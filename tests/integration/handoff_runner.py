@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -91,16 +91,6 @@ def comsol_environment(
             )
             if path.is_dir()
         )
-    torch_library = (
-        Path(sys.prefix)
-        / "lib"
-        / f"python{sys.version_info.major}.{sys.version_info.minor}"
-        / "site-packages"
-        / "torch"
-        / "lib"
-    )
-    if torch_library.exists():
-        library_parts.insert(0, str(torch_library))
     existing = env.get("DYLD_LIBRARY_PATH")
     if existing:
         library_parts.append(existing)
@@ -109,10 +99,6 @@ def comsol_environment(
 
     if data_dir is not None:
         env["COMSOL_MCP_DATA_DIR"] = str(data_dir)
-        env["COMSOL_MCP_DB_DIR"] = str(data_dir / "knowledge_base")
-        env["COMSOL_MCP_REPORT_DIR"] = str(data_dir / "simulation_reports")
-        env["HF_HOME"] = str(data_dir / "huggingface")
-    env.setdefault("HF_ENDPOINT", "https://huggingface.co")
     return env
 
 
@@ -230,12 +216,11 @@ def write_acceptance_report(
         f"- 模型：{model.get('name')}（tag: `{model.get('tag')}`）",
         f"- 模型文件：{model.get('file') or '未保存，仅存在于服务器内存'}",
         f"- 参数初值：`{values.get('initial')}`",
-        f"- observe 拒绝后 Client A 读值：`{values.get('after_observe_denial')}`",
-        f"- write 修改后 Client A 读值：`{values.get('after_write')}`",
+        f"- 修改后 Client A 读值：`{values.get('after_write')}`",
         f"- detach 后 Client A 读值：`{values.get('after_detach')}`",
         f"- MCP 断开后 Client A 读值：`{values.get('after_mcp_disconnect')}`",
-        f"- 禁止保存文件是否出现：{clean.get('forbidden_file_exists')}",
-        f"- 模型是否始终未保存：{clean.get('model_never_saved')}",
+        f"- 保存副本：{clean.get('saved_file')}",
+        f"- 临时模型是否已明确删除：{clean.get('model_removed')}",
         f"- MCP 断开后 Server 是否仍运行：{cleanup.get('server_running_after_mcp_disconnect')}",
         f"- Client A 是否已退出：{cleanup.get('client_a_stopped')}",
         f"- 临时 Server 是否已停止：{cleanup.get('server_stopped')}",
@@ -265,7 +250,7 @@ def write_acceptance_report(
             "## 边界说明",
             "",
             "- 本记录来自真实 COMSOL API 与 MCP SDK 双客户端链路，不是 mock。",
-            "- 未连接默认 2036 端口，未扫描现有用户 Server，未保存或删除模型。",
+            "- 使用非 2036 临时 Server；保存和删除仅针对本脚本创建的临时模型。",
             "- COMSOL Desktop 人工观察清单未在本自动化验收中执行。",
             "",
         ]
@@ -501,12 +486,11 @@ def verify_audit(
     *,
     model_tag: str,
 ) -> dict[str, Any]:
-    """Verify the journal proves both denials and the successful write."""
+    """Verify the journal records the explicit write, save, and removal."""
     expected = {
-        ("param_set", False, "model_write_access_required"),
-        ("param_set", True, None),
-        ("model_save", False, "external_model_lifecycle_protected"),
-        ("model_remove", False, "external_model_lifecycle_protected"),
+        ("comsol_api_write", True, None),
+        ("model_save", True, None),
+        ("model_remove", True, None),
     }
     found: set[tuple[str, bool, str | None]] = set()
     for record in records:
@@ -534,328 +518,149 @@ def verify_audit(
     }
 
 
+async def complete_tool_report(session: Any, first: dict[str, Any], timeout: float) -> str:
+    """Read the frozen continuation of one tool report without repeating actions."""
+    text = first.get("report_markdown")
+    if not isinstance(text, str):
+        raise AcceptanceFailure("report", "Tool returned no copyable report.", first)
+    parts = [text]
+    delivery = first.get("report_delivery", {})
+    report_id = delivery.get("report_id")
+    seen_offsets = set()
+    while delivery.get("next_offset") is not None:
+        offset = delivery["next_offset"]
+        if offset in seen_offsets:
+            raise AcceptanceFailure("report", "Report pagination repeated an offset.", delivery)
+        seen_offsets.add(offset)
+        page = await call_mcp(
+            session, "diagnostic_report_page", {"report_id": report_id, "offset": offset}, timeout,
+        )
+        assert_result("report_page", page, success=True)
+        delivery = page.get("report_delivery", {})
+        if delivery.get("report_id") != report_id:
+            raise AcceptanceFailure("report", "Report identity changed during pagination.", page)
+        parts.append(page["report_markdown"])
+    return "".join(parts)
+
+
 async def run_mcp_flow(
     *,
     port: int,
     model_tag: str,
     client_a: ClientAController,
     data_dir: Path,
-    forbidden_path: Path,
+    save_path: Path,
     timeout: float,
     report: dict[str, Any],
 ) -> None:
-    """Run Client B through the public MCP stdio transport."""
+    """Execute the explicit task through MCP and independently read Client A."""
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    env = comsol_environment(data_dir=data_dir)
     params = StdioServerParameters(
-        command=str(DEFAULT_PYTHON),
-        args=["-m", "src.server"],
-        cwd=str(PROJECT_ROOT),
-        env=env,
+        command=str(DEFAULT_PYTHON), args=["-m", "src.server"],
+        cwd=str(PROJECT_ROOT), env=comsol_environment(data_dir=data_dir),
     )
-
     async with stdio_client(params) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             await session.initialize()
-
             connected = await call_mcp(
-                session,
-                "comsol_connect",
-                {"port": port, "host": "localhost"},
-                timeout,
+                session, "comsol_connect", {"port": port, "host": "localhost"}, timeout,
             )
             assert_result("connect", connected, success=True)
             if connected.get("session_mode") != "shared-external":
-                raise AcceptanceFailure(
-                    "connect",
-                    "MCP did not enter shared-external mode.",
-                    connected,
-                )
-            stage_record(
-                report,
-                "MCP 连接临时外部 Server",
-                "Client B 通过 MCP SDK/STDIO 成功连接。",
-                result=connected,
-            )
+                raise AcceptanceFailure("connect", "Expected shared-external connection.", connected)
+            owner_state = await client_a.state()
+            if not owner_state.get("exists") or owner_state.get("value") != "1":
+                raise AcceptanceFailure("client_a_ownership", "Client A did not retain its model.", owner_state)
+            stage_record(report, "MCP 连接临时 Server", "两个客户端连接同一临时 Server。",
+                         result=connected, client_a=owner_state)
 
-            # Re-read the model from Client A after Client B has connected.
-            # This both proves A remained attached across the second connection
-            # and refreshes COMSOL's per-client model-use bookkeeping before B
-            # asks modelsUsedByOtherClients().
-            try:
-                owner_state = await client_a.state()
-            except Exception as exc:
-                raise AcceptanceFailure(
-                    "client_a_ownership",
-                    f"Client A could not re-read the model: {exc}",
-                ) from exc
-            if (
-                not owner_state.get("exists")
-                or owner_state.get("value") != "1"
-                or owner_state.get("file") is not None
-            ):
-                raise AcceptanceFailure(
-                    "client_a_ownership",
-                    "Client A did not retain the unsaved model after B connected.",
-                    owner_state,
-                )
-            stage_record(
-                report,
-                "Client A 持有状态复核",
-                "Client B 连接后，A 重新取得同 tag 且参数仍为 1。",
-                client_a=owner_state,
-            )
-
-            discovered = await call_mcp(
-                session,
-                "model_discover",
-                {},
-                timeout,
-            )
+            discovered = await call_mcp(session, "model_discover", {}, timeout)
             assert_result("discover", discovered, success=True)
-            candidates = [
-                item
-                for item in discovered.get("models", [])
-                if item.get("tag") == model_tag
-            ]
-            if len(candidates) != 1:
-                raise AcceptanceFailure(
-                    "discover",
-                    "MCP did not discover exactly one Client A model.",
-                    discovered,
-                )
-            candidate = candidates[0]
-            if (
-                candidate.get("registered") is not False
-                or candidate.get("used_by_other_clients") is not True
-                or candidate.get("file") is not None
-            ):
-                raise AcceptanceFailure(
-                    "discover",
-                    "Discovered model metadata did not match external unsaved state.",
-                    candidate,
-                )
-            report["discovery"] = candidate
-            stage_record(
-                report,
-                "发现 Client A 模型",
-                "按稳定 tag 找到未保存且由其他客户端持有的模型。",
-                model=candidate,
-            )
-
-            attached = await call_mcp(
-                session,
-                "model_attach",
-                {"model_tag": model_tag},
-                timeout,
-            )
+            candidates = [item for item in discovered.get("models", []) if item.get("tag") == model_tag]
+            if len(candidates) != 1 or candidates[0].get("registered") is not False:
+                raise AcceptanceFailure("discover", "Expected one unregistered Client A model.", discovered)
+            report["discovery"] = candidates[0]
+            attached = await call_mcp(session, "model_attach", {"model_tag": model_tag}, timeout)
             assert_result("attach", attached, success=True)
-            attached_model = attached.get("model", {})
-            if (
-                attached_model.get("origin") != "external_attached"
-                or attached_model.get("access_mode") != "observe"
-                or attached_model.get("server_managed") is not False
-            ):
-                raise AcceptanceFailure(
-                    "attach",
-                    "Attached model ownership/access metadata is incorrect.",
-                    attached,
-                )
-            stage_record(
-                report,
-                "observe 模式接管",
-                "外部模型默认以 observe、非 MCP 管理状态登记。",
-                result=attached,
-            )
+            metadata = attached.get("model", {})
+            if metadata.get("origin") != "external_attached":
+                raise AcceptanceFailure("attach", "Unexpected attached model origin.", attached)
+            stage_record(report, "按实际 tag 接管", "登记 Client A 的既有模型。", result=attached)
 
-            denied = await call_mcp(
-                session,
-                "param_set",
-                {
-                    "name": "handoff_value",
-                    "value": "42",
-                    "model_name": model_tag,
-                },
-                timeout,
-            )
-            assert_result(
-                "observe_denial",
-                denied,
-                success=False,
-                error_code="model_write_access_required",
-            )
-            after_denial = await client_a.state()
-            if after_denial.get("value") != "1":
-                raise AcceptanceFailure(
-                    "observe_denial",
-                    "Observe-mode denial still changed Client A's parameter.",
-                    after_denial,
-                )
-            report["values"]["after_observe_denial"] = after_denial["value"]
-            stage_record(
-                report,
-                "observe 写入拦截",
-                "param_set 在工具正文前被拒绝，Client A 仍读到 1。",
-                denial=denied,
-                client_a=after_denial,
-            )
-
-            access = await call_mcp(
-                session,
-                "model_access_set",
-                {"model_name": model_tag, "access_mode": "write"},
-                timeout,
-            )
-            assert_result("write_access", access, success=True)
-            if access.get("access_mode") != "write":
-                raise AcceptanceFailure(
-                    "write_access",
-                    "MCP did not grant write access.",
-                    access,
-                )
-
+            steps = [{"method": "param", "args": []}]
+            check = {"steps": steps, "method": "get", "args": ["handoff_value"]}
             changed = await call_mcp(
-                session,
-                "param_set",
+                session, "comsol_api_write",
                 {
-                    "name": "handoff_value",
-                    "value": "42",
-                    "model_name": model_tag,
+                    "model_name": model_tag, "steps": steps, "method": "set",
+                    "args": ["handoff_value", "42"],
+                    "preconditions": [{**check, "expect": {"operator": "equals", "value": "1"}}],
+                    "before": [check],
+                    "verify": [{**check, "expect": {"operator": "equals", "value": "42"}}],
                 },
                 timeout,
             )
             assert_result("write_parameter", changed, success=True)
+            if changed.get("status") != "verified":
+                raise AcceptanceFailure("write_parameter", "API write did not verify.", changed)
+            report["handoff_report"] = await complete_tool_report(session, changed, timeout)
             after_write = await client_a.state()
             if after_write.get("value") != "42":
-                raise AcceptanceFailure(
-                    "write_parameter",
-                    "Client A did not observe MCP's parameter update.",
-                    after_write,
-                )
+                raise AcceptanceFailure("write_parameter", "Client A did not read the expected value.", after_write)
             report["values"]["after_write"] = after_write["value"]
-            stage_record(
-                report,
-                "write 模式跨客户端修改",
-                "MCP 将参数改为 42，Client A 从同一模型读到 42。",
-                access=access,
-                result=changed,
-                client_a=after_write,
-            )
+            stage_record(report, "执行与回读", "参数由 1 改为 42，工具验证与 Client A 回读一致。",
+                         result=changed, client_a=after_write)
 
-            save_denied = await call_mcp(
-                session,
-                "model_save",
-                {
-                    "model_name": model_tag,
-                    "file_path": str(forbidden_path),
-                },
+            saved = await call_mcp(
+                session, "model_save",
+                {"model_name": model_tag, "file_path": str(save_path), "save_copy": True},
                 timeout,
             )
-            assert_result(
-                "save_protection",
-                save_denied,
-                success=False,
-                error_code="external_model_lifecycle_protected",
-            )
-            remove_denied = await call_mcp(
-                session,
-                "model_remove",
-                {"model_name": model_tag},
-                timeout,
-            )
-            assert_result(
-                "remove_protection",
-                remove_denied,
-                success=False,
-                error_code="external_model_lifecycle_protected",
-            )
-            protected_state = await client_a.state()
-            if (
-                forbidden_path.exists()
-                or not protected_state.get("exists")
-                or protected_state.get("file") is not None
-            ):
-                raise AcceptanceFailure(
-                    "lifecycle_protection",
-                    "External save/remove protection changed model lifecycle.",
-                    {
-                        "file_exists": forbidden_path.exists(),
-                        "client_a": protected_state,
-                    },
-                )
-            report["forbidden_file_exists"] = forbidden_path.exists()
-            stage_record(
-                report,
-                "外部模型生命周期保护",
-                "保存和删除均被拒绝；模型仍在内存且没有生成文件。",
-                save=save_denied,
-                remove=remove_denied,
-                client_a=protected_state,
-            )
+            assert_result("save", saved, success=True)
+            if not save_path.is_file() or save_path.stat().st_size == 0:
+                raise AcceptanceFailure("save", "Explicit save produced no nonempty file.", saved)
+            report["saved_file"] = {"path": str(save_path), "size_bytes": save_path.stat().st_size}
+            stage_record(report, "显式保存副本", "在临时目录保存 MPH 副本。", result=saved)
 
-            detached = await call_mcp(
-                session,
-                "model_detach",
-                {"model_name": model_tag},
-                timeout,
-            )
+            detached = await call_mcp(session, "model_detach", {"model_name": model_tag}, timeout)
             assert_result("detach", detached, success=True)
-            if detached.get("server_model_preserved") is not True:
-                raise AcceptanceFailure(
-                    "detach",
-                    "Detach did not report server model preservation.",
-                    detached,
-                )
             after_detach = await client_a.state()
-            if (
-                not after_detach.get("exists")
-                or after_detach.get("value") != "42"
-                or after_detach.get("file") is not None
-            ):
-                raise AcceptanceFailure(
-                    "detach",
-                    "Client A model was not preserved after MCP detach.",
-                    after_detach,
-                )
+            if not after_detach.get("exists") or after_detach.get("value") != "42":
+                raise AcceptanceFailure("detach", "Detach changed the Server model.", after_detach)
             report["values"]["after_detach"] = after_detach["value"]
-            stage_record(
-                report,
-                "MCP detach",
-                "MCP 仅清除登记，Client A 模型及参数 42 均保留。",
-                result=detached,
-                client_a=after_detach,
-            )
+            stage_record(report, "移除本地登记", "Server 上的模型与参数保留。", result=detached)
 
-            disconnected = await call_mcp(
-                session,
-                "comsol_disconnect",
-                {},
-                timeout,
-            )
+            disconnected = await call_mcp(session, "comsol_disconnect", {}, timeout)
             assert_result("disconnect", disconnected, success=True)
             after_disconnect = await client_a.state()
-            if (
-                not after_disconnect.get("exists")
-                or after_disconnect.get("value") != "42"
-                or after_disconnect.get("file") is not None
-            ):
-                raise AcceptanceFailure(
-                    "disconnect",
-                    "External Server model disappeared after MCP disconnect.",
-                    after_disconnect,
-                )
+            if not after_disconnect.get("exists") or after_disconnect.get("value") != "42":
+                raise AcceptanceFailure("disconnect", "External Server model was not preserved.", after_disconnect)
             report["values"]["after_mcp_disconnect"] = after_disconnect["value"]
-            report["model"]["final_file"] = after_disconnect.get("file")
-            report["model_never_saved"] = after_disconnect.get("file") is None
-            stage_record(
-                report,
-                "MCP 断开外部 Server",
-                "仅断开 Client B；Client A 继续访问模型和临时 Server。",
-                result=disconnected,
-                client_a=after_disconnect,
+            report["model"]["save_location_after_copy"] = after_disconnect.get("file")
+            if after_disconnect.get("file") is not None:
+                raise AcceptanceFailure("save_copy", "Saving a copy changed the source save location.", after_disconnect)
+            stage_record(report, "断开后模型保留", "Client A 仍取得参数 42，源模型保存位置保持为空。",
+                         result=disconnected, client_a=after_disconnect)
+
+            reconnected = await call_mcp(
+                session, "comsol_connect", {"port": port, "host": "localhost"}, timeout,
             )
+            assert_result("reconnect", reconnected, success=True)
+            reattached = await call_mcp(session, "model_attach", {"model_tag": model_tag}, timeout)
+            assert_result("reattach", reattached, success=True)
+            removed = await call_mcp(session, "model_remove", {"model_name": model_tag}, timeout)
+            assert_result("remove", removed, success=True)
+            final_state = await client_a.state()
+            if final_state.get("exists"):
+                raise AcceptanceFailure("remove", "Client A still sees the explicitly removed model.", final_state)
+            report["model_removed"] = True
+            report["model"]["final_exists"] = False
+            stage_record(report, "显式删除临时模型", "按同一 tag 删除并核验模型已不存在。",
+                         result=removed, client_a=final_state)
+            disconnected = await call_mcp(session, "comsol_disconnect", {}, timeout)
+            assert_result("final_disconnect", disconnected, success=True)
 
 
 async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
@@ -871,13 +676,12 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         "discovery": {},
         "values": {
             "initial": None,
-            "after_observe_denial": None,
             "after_write": None,
             "after_detach": None,
             "after_mcp_disconnect": None,
         },
-        "forbidden_file_exists": None,
-        "model_never_saved": False,
+        "saved_file": None,
+        "model_removed": False,
         "audit": {},
         "stages": [],
         "cleanup": {
@@ -898,7 +702,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="comsol-mcp-handoff-") as temp_name:
         temp_dir = Path(temp_name)
         data_dir = temp_dir / "mcp-data"
-        forbidden_path = temp_dir / "must-not-exist.mph"
+        save_path = temp_dir / "explicit-copy.mph"
         os.environ.update(comsol_environment(data_dir=data_dir))
 
         try:
@@ -930,7 +734,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
             )
 
             model_name = (
-                "Codex External Handoff "
+                "COMSOL External Handoff "
                 + datetime.now().strftime("%Y%m%d-%H%M%S")
                 + "-"
                 + uuid.uuid4().hex[:6]
@@ -995,7 +799,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
                 model_tag=str(model["tag"]),
                 client_a=client_a,
                 data_dir=data_dir,
-                forbidden_path=forbidden_path,
+                save_path=save_path,
                 timeout=args.timeout,
                 report=report,
             )
@@ -1024,7 +828,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
             stage_record(
                 report,
                 "审计记录核对",
-                "日志包含 observe 拒绝、write 成功及保存/删除拒绝。",
+                "日志包含通用 API 写入、显式保存和显式删除的实际结果。",
                 audit=audit,
             )
             report["success"] = True
@@ -1077,11 +881,6 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
                 except Exception as exc:
                     report["cleanup"]["server_stopped"] = False
                     report["cleanup"]["server_state_error"] = str(exc)
-            if forbidden_path.exists():
-                report["forbidden_file_exists"] = True
-                report["success"] = False
-                report["failed_stage"] = report["failed_stage"] or "cleanup"
-                report["error"] = report["error"] or "Forbidden MPH file was created."
 
     if not report["cleanup"]["client_a_stopped"]:
         report["success"] = False
@@ -1110,7 +909,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--report-dir",
         type=Path,
-        default=PROJECT_ROOT / ".comsol-mcp-data" / "integration_reports",
+        default=Path(os.environ.get("COMSOL_MCP_DATA_DIR", ".comsol-mcp-data")).expanduser().resolve() / "integration_reports",
         help="Directory for local JSON and Markdown acceptance records.",
     )
     parser.add_argument("--client-a-worker", action="store_true", help=argparse.SUPPRESS)

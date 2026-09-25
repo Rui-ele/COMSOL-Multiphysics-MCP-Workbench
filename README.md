@@ -1,90 +1,117 @@
 # COMSOL MCP Workbench
 
-A reusable local MCP server for safe COMSOL Multiphysics automation. It lets an
-MCP client and COMSOL Desktop work with the same model through a multi-client
-COMSOL Server.
+GPT plans COMSOL tasks with the user. A Qwen Agent in the company's Employee
+Assistant executes them through MCP. The user transfers complete tasks and reports.
 
-[中文说明](README_CN.md)
+**Discuss with GPT → copy a task to Employee Assistant → execute through MCP → paste the report back to GPT → plan the next step.**
 
-## What this distribution adds
+[中文使用说明](README_CN.md)
 
-- Discover and attach models already held by another COMSOL client.
-- Default external models to read-only `observe` access.
-- Require an explicit switch to `write` before mutation or solving.
-- Prevent MCP from saving or deleting externally owned models.
-- Preserve a concise audit trail and create simulation handoff reports.
-- Verify the handoff contract with an opt-in real two-client test.
+## Responsibilities
 
-## Structured parameter-task PoC
+| Role | Work |
+| --- | --- |
+| GPT | Consult documentation, choose technical methods, define dependencies and verification criteria, interpret results |
+| Employee Assistant Agent | Connect, locate objects, coordinate tool calls, follow task conditions, assemble reports |
+| MCP | Execute explicit operations, check preconditions, read back state and return facts |
+| COMSOL | Maintain models, build, solve and produce results |
 
-The first workflow for [proposal A](docs/comsol-proposal.md) is a single, expert-approved parameter change. The [task protocol](docs/task-protocol.md) defines the JSON task and its structured result; [AGENTS.md](AGENTS.md) and the [parameter-task skill](.agents/skills/comsol-parameter-task/SKILL.md) define the local operator workflow.
+The tools cover model discovery and attachment, scoped inspection, generic API
+reads and verified changes, geometry and mesh builds, background solving,
+configured result evaluation, and file operations. GPT supplies concrete calls
+from the deployed tool definitions and matching COMSOL documentation.
 
-For an agent, use the restricted `src.task_server` entry point in [the task MCP config example](examples/codex.task.config.toml.example). Its tools connect to an already running COMSOL Server, attach by tag, read a parameter with `param_get`, and run the parameter-task flow. Broad model discovery/inspection, parameter listing, general `param_set`, mesh, and solve tools are absent. `model_attach` and `param_get` can still address other known tags and names; the effective read scope depends on deployment permissions and expert rules. The full `src.server` remains available for internal expert-operated workflows. External GPT does not connect directly to MCP; the expert selects any context to share.
+## Install and diagnose the installation
 
-The expert obtains the current model's exact COMSOL tag in Desktop or the internal full MCP and supplies that tag and selected parameter information to the agent. The agent attaches that tag, then calls `task_parameter_preview` while it is in `observe` mode. Show the complete task and live readback to the expert. The expert runs `comsol-task-approve <task_id> --data-dir <MCP data directory>` in a local interactive terminal, reviews the preview, and enters the requested confirmation phrase. The agent must not run that CLI. After the expert reports approval and `task_parameter_status(task_id)` confirms `approved`, explicitly switch the same model to `write`, call `task_parameter_execute(model_name, task)`, and restore an externally attached model to `observe`. The execute tool rechecks the initial expression and reads the changed expression back. The CLI data directory must match MCP's `COMSOL_MCP_DATA_DIR`; remote approval through the employee assistant is not yet implemented. Task status remains queryable after an MCP restart, but an older preview cannot be executed after a restart, reconnect, or new model attachment. Prepare and approve a new `task_id` instead.
+Requires Python 3.10+, a local COMSOL installation supported by MPh, and an
+available license for live model operations.
 
-The earlier two-client acceptance model was temporary and has been stopped; its tag is not a reusable target. This PoC does not build a mesh, solve, save a model, or schedule later compute jobs. Live COMSOL acceptance is to be run on a company machine with an available license.
-
-The local CLI and SQLite ledger do not authenticate a separate human identity. In a local Codex setup, an agent with arbitrary shell access under the same system account or direct database write access could bypass approval. A company deployment needs a trusted service boundary for MCP, approval, and task data, with the agent's arbitrary shell and database access restricted. A trusted employee-assistant approval interface remains to be built.
-
-## Requirements
-
-- Python 3.10 or newer.
-- A locally installed COMSOL Multiphysics version supported by MPh.
-- A valid COMSOL license for live operations.
-
-## Install
+macOS / Linux:
 
 ```bash
 python3 scripts/bootstrap.py
 .venv/bin/comsol-mcp-doctor
 ```
 
-On Windows, use `.venv\Scripts\comsol-mcp-doctor.exe`.
+Windows:
 
-The core installation does not include PDF indexing dependencies. To enable the
-optional local documentation search:
-
-```bash
-python3 scripts/bootstrap.py --knowledge
+```powershell
+py scripts/bootstrap.py
+.venv\Scripts\comsol-mcp-doctor.exe
 ```
 
-## Run
+The installation diagnostic checks Python, dependencies, the COMSOL installation
+and Java. Use it during installation or startup troubleshooting; it requires no
+COMSOL license.
 
-Use the restricted task entry point:
+## Connect Employee Assistant
 
-```bash
-.venv/bin/comsol-mcp-task
+The MCP server uses stdio. The Employee Assistant integration must launch a
+local process and support consecutive tool calls. Supply these launch settings:
+
+| Setting | Value |
+| --- | --- |
+| Transport | `stdio` |
+| Program | Absolute path to `.venv/Scripts/python.exe` on Windows or `.venv/bin/python` on macOS / Linux |
+| Arguments | `-m src.server` |
+| Working directory | Absolute path to `workbench` |
+| Environment | `COMSOL_MCP_COMSOL_VERSION`; optionally `COMSOL_MCP_COMSOL_ROOT` and `COMSOL_MCP_DATA_DIR`; see [.env.example](.env.example) |
+
+The installed `comsol-mcp` executable is an equivalent entry point. Confirm the
+Employee Assistant's configuration fields and local process support in the
+company environment.
+
+Load [AGENTS.md](AGENTS.md) as the execution instructions, along with the
+[diagnostics Skill](.agents/skills/comsol-diagnostics/SKILL.md) and
+[execution Skill](.agents/skills/comsol-model-edit/SKILL.md). Load Skills as needed
+when supported, or include both short Skills in the execution instructions.
+
+Start a multi-client COMSOL Server and connect Desktop to it. Employee Assistant
+then calls `comsol_connect`, `model_discover`, and `model_attach` to work with the
+intended Server model.
+
+## Daily use
+
+1. Set up the [GPT project instructions](docs/gpt-project-instructions.md).
+2. Discuss the problem with GPT and obtain a task with explicit operations,
+   dependencies, verification criteria and required evidence.
+3. Copy the task to Employee Assistant. Forwarding an explicit task authorizes execution.
+4. Paste its complete report back to GPT for analysis and the next task.
+
+You can also start by asking Employee Assistant to collect a model overview for
+GPT. See [task/report examples and pagination](docs/task-protocol.md).
+Background solving returns a `run_id` for subsequent status queries. The current
+cancel endpoint reports cancellation as unsupported.
+
+## Layout
+
+```text
+workbench/
+├── src/
+│   ├── server.py       MCP entry point
+│   ├── doctor.py       Installation diagnostic
+│   ├── tools/          Agent-facing interfaces
+│   └── core/           Session, API, inspection, solver and report implementations
+├── tests/              Program tests; integration/ holds real COMSOL acceptance
+├── scripts/            Installation and release utilities
+├── docs/               Architecture, GPT instructions and handoff conventions
+└── .agents/            Employee Assistant execution Skills
 ```
 
-For Codex, copy and edit `examples/codex.task.config.toml.example`. Every path
-in that template is a placeholder and must be replaced with an absolute path
-on the target machine. The full `examples/codex.config.toml.example` exposes
-general write, mesh, and solve tools and is for expert manual operation only.
-The restricted entry point connects to an already running COMSOL Server through
-`comsol_connect`.
+See [architecture](docs/comsol-proposal.md) and
+[maintenance and release instructions](RELEASE_CONTENTS.md).
 
-## Validate
+## Local data
 
-```bash
-.venv/bin/pytest
-.venv/bin/python -m build
-```
+- Operation journals: `COMSOL_MCP_DATA_DIR/audit/`, defaulting to
+  `.comsol-mcp-data/audit/` under the working directory.
+- Report pages: the 16 most recently used reports in MCP process memory.
+- Model saves and exports: absolute paths supplied by the task.
+- Real acceptance reports: `integration_reports/` under the data directory,
+  unless an explicit report directory is supplied.
 
-The default test suite never starts COMSOL. The real two-client acceptance test
-is opt-in and uses a temporary port and an unsaved in-memory model:
+Keep the data directory outside the checkout. Users select material suitable
+for sharing with external GPT under company rules.
 
-```bash
-.venv/bin/pytest -m integration
-```
-
-## Local data boundary
-
-Models, official manuals, vector databases, audit logs, reports, credentials,
-and machine-specific MCP configuration are intentionally excluded from this
-repository. See `RELEASE_CONTENTS.md` for the publishable boundary.
-
-## Upstream
-
-This project is derived from `wjc9011/COMSOL_Multiphysics_MCP` under the MIT
-License. See `NOTICE.md`.
+Derived from [wjc9011/COMSOL_Multiphysics_MCP](https://github.com/wjc9011/COMSOL_Multiphysics_MCP)
+under the MIT License. See `LICENSE` and [NOTICE.md](NOTICE.md).

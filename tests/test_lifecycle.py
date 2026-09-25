@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import src.tools.model as model_module
-import src.tools.session as session_module
-from src.reporting import AuditRecorder, AuditedFastMCP, _result_payload
+import src.core.session as session_module
+from src.core.tool_runtime import AuditRecorder, AuditedFastMCP, _result_payload
 from src.tools.model import register_model_tools
-from src.tools.session import SessionManager
+from src.core.session import SessionManager
 
 
 class LifecycleJavaModel:
@@ -185,7 +187,6 @@ def test_status_refreshes_rename_and_marks_missing_model_stale(
     assert live["current_model"] == "Renamed in Desktop"
     assert live["current_model_tag"] == "desktop-tag"
     assert live["desktop_attached"] is True
-    assert live["models"][0]["used_by_other_clients"] is True
     assert live["models"][0]["stale"] is False
     assert live["models"][0]["last_seen_at"] is not None
 
@@ -222,12 +223,28 @@ def test_model_list_reports_live_and_stale_lifecycle_fields(
     lifecycle_manager.client.java.observed_tags = []
     stale = registry.tools["model_list"]()
 
-    assert live["registry_state_available"] is True
     assert live["models"][0]["name"] == "Renamed for List"
-    assert live["models"][0]["used_by_other_clients"] is True
     assert live["models"][0]["stale"] is False
     assert stale["models"][0]["stale"] is True
     assert stale["models"][0]["stale_reason"] == "model_missing_from_server"
+
+
+def test_status_uses_cached_model_identity_while_solver_is_running(lifecycle_manager, monkeypatch):
+    java, record = attach_external(lifecycle_manager)
+    reads_before = (java.label_calls, java.get_file_calls)
+    monkeypatch.setattr(
+        "src.core.solver.async_solver",
+        SimpleNamespace(is_running=True, get_progress=lambda: {"run_id": "active-run", "status": "running"}),
+    )
+    monkeypatch.setattr(lifecycle_manager.client.java, "tags", lambda: pytest.fail("busy status queried COMSOL"))
+
+    status = lifecycle_manager.get_status()
+
+    assert status["connected"] is True
+    assert status["models"][0]["tag"] == record.tag
+    assert "cache" in status["model_metadata_source"]
+    assert status["operation"]["run_id"] == "active-run"
+    assert (java.label_calls, java.get_file_calls) == reads_before
 
 
 @pytest.mark.asyncio
@@ -241,10 +258,10 @@ async def test_stale_model_blocks_reads_writes_solve_and_report_before_body(
     mcp = AuditedFastMCP("stale-guard", recorder=recorder)
     counters = defaultdict(int)
     guarded = [
-        "model_inspect",
-        "param_set",
+        "comsol_api_read",
+        "comsol_api_write",
         "study_solve",
-        "simulation_report_create",
+        "results_evaluate",
     ]
     for name in guarded + ["model_detach"]:
         add_counted_tool(mcp, counters, name)
@@ -265,7 +282,7 @@ async def test_stale_model_blocks_reads_writes_solve_and_report_before_body(
         name: 0 for name in guarded
     }
     assert counters["model_detach"] == 1
-    records = recorder.pending_records()
+    records = [json.loads(line) for line in recorder.journal_path.read_text().splitlines()]
     assert [record["success"] for record in records] == [
         False,
         False,
@@ -298,16 +315,16 @@ async def test_stale_tag_is_sticky_until_explicit_attach(
         recorder=AuditRecorder(tmp_path),
     )
     counters = defaultdict(int)
-    add_counted_tool(mcp, counters, "model_inspect")
+    add_counted_tool(mcp, counters, "comsol_api_read")
     still_stale = _result_payload(
         await mcp.call_tool(
-            "model_inspect",
+            "comsol_api_read",
             {"model_name": "desktop-tag"},
         )
     )
 
     assert still_stale["error_code"] == "model_stale"
-    assert counters["model_inspect"] == 0
+    assert counters["comsol_api_read"] == 0
     reattached, attached = lifecycle_manager.attach_server_model(
         "desktop-tag"
     )
@@ -316,63 +333,8 @@ async def test_stale_tag_is_sticky_until_explicit_attach(
     assert reattached.model.java is replacement_java
     assert reattached.name == "Replacement Model"
     assert reattached.origin == "external_attached"
-    assert reattached.access_mode == "observe"
     assert reattached.server_managed is False
     assert reattached.stale is False
-
-
-@pytest.mark.asyncio
-async def test_external_write_mode_still_blocks_save_version_and_remove(
-    tmp_path,
-    lifecycle_manager,
-):
-    _java, external = attach_external(lifecycle_manager)
-    lifecycle_manager.set_model_access(external.tag, "write")
-    managed_java = add_server_model(
-        lifecycle_manager,
-        tag="managed-tag",
-        name="Managed Model",
-        file_path=tmp_path / "managed.mph",
-    )
-    lifecycle_manager.add_model(
-        LifecycleModel(managed_java),
-        origin="mcp_loaded",
-        access_mode="write",
-        server_managed=True,
-    )
-
-    recorder = AuditRecorder(tmp_path / "audit")
-    mcp = AuditedFastMCP("external-lifecycle", recorder=recorder)
-    counters = defaultdict(int)
-    protected = ["model_save", "model_save_version", "model_remove"]
-    for name in protected:
-        add_counted_tool(mcp, counters, name)
-
-    for name in protected:
-        result = _result_payload(
-            await mcp.call_tool(name, {"model_name": "desktop-tag"})
-        )
-        assert result["error_code"] == "external_model_lifecycle_protected"
-        assert result["origin"] == "external_attached"
-        assert result["server_managed"] is False
-        assert result["operation"] == name
-
-    managed = _result_payload(
-        await mcp.call_tool("model_save", {"model_name": "managed-tag"})
-    )
-    assert managed["success"] is True
-    assert {name: counters[name] for name in protected} == {
-        "model_save": 1,
-        "model_save_version": 0,
-        "model_remove": 0,
-    }
-    records = recorder.pending_records()
-    assert [record["success"] for record in records] == [
-        False,
-        False,
-        False,
-        True,
-    ]
 
 
 @pytest.mark.asyncio
@@ -386,11 +348,11 @@ async def test_enumeration_failure_does_not_mark_models_stale(
     recorder = AuditRecorder(tmp_path)
     mcp = AuditedFastMCP("state-unavailable", recorder=recorder)
     counters = defaultdict(int)
-    add_counted_tool(mcp, counters, "model_inspect")
+    add_counted_tool(mcp, counters, "comsol_api_read")
 
     result = _result_payload(
         await mcp.call_tool(
-            "model_inspect",
+            "comsol_api_read",
             {"model_name": "desktop-tag"},
         )
     )
@@ -398,12 +360,13 @@ async def test_enumeration_failure_does_not_mark_models_stale(
 
     assert result["error_code"] == "model_state_unavailable"
     assert "server unavailable" in result["detail"]
-    assert counters["model_inspect"] == 0
+    assert counters["comsol_api_read"] == 0
     assert record.stale is False
     assert _java.label_calls == label_calls_before_failure
     assert status["registry_state_available"] is False
     assert "server unavailable" in status["registry_sync_error"]
-    assert recorder.pending_records()[0]["success"] is False
+    records = [json.loads(line) for line in recorder.journal_path.read_text().splitlines()]
+    assert records[0]["success"] is False
 
 
 def test_external_disconnect_clears_registry_and_requires_reattach(
@@ -432,4 +395,3 @@ def test_external_disconnect_clears_registry_and_requires_reattach(
     record, attached = lifecycle_manager.attach_server_model("desktop-tag")
     assert attached is True
     assert record.origin == "external_attached"
-    assert record.access_mode == "observe"

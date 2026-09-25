@@ -1,297 +1,132 @@
-"""Tests for COMSOL MCP command auditing and handoff reports."""
+"""Complete per-call facts and operation-journal regression checks."""
 
-from datetime import datetime
-from pathlib import Path
+import json
 
 import pytest
 
-import src.tools.report as report_module
-from src.reporting import (
-    AuditRecorder,
-    AuditedFastMCP,
-    should_audit_tool,
-    summarize_value,
-)
-from src.tools.report import PlotRecommendation, create_simulation_report
-from src.tools.session import ModelRecord
+from src.core.reports import report_page
+from src.core.reports import tool_report
+from src.core.tool_runtime import AuditRecorder, AuditedFastMCP, _result_payload, journal_value
 
 
-class FakeModel:
-    class Java:
-        def tag(self):
-            return "model-report"
-
-    java = Java()
-
-    def name(self):
-        return "2D_Coils_ACDC_N300_freq"
-
-    def file(self):
-        return None
-
-    def version(self):
-        return "6.4"
-
-    def studies(self):
-        return ["Study 1", "Study 4"]
-
-    def solutions(self):
-        return ["Study 1/Solution 1", "Study 4/Solution 4"]
-
-    def datasets(self):
-        return ["Study 1/Solution 1", "Study 4/Solution 4"]
-
-    def plots(self):
-        return ["Magnetic Flux Density", "B Field"]
-
-    def problems(self):
-        return []
-
-
-class FakeSessionManager:
-    def __init__(self):
-        self.model = FakeModel()
-
-    def get_model(self, name=None):
-        if name not in (None, self.model.name()):
-            return None
-        return self.model
-
-    def get_status(self):
-        return {
-            "connected": True,
-            "version": "6.4",
-            "session_mode": "shared-managed",
-            "server_host": "localhost",
-            "server_port": 2036,
-            "desktop_attached": True,
-            "current_model": self.model.name(),
-            "current_model_tag": "model-report",
-            "models_used_by_other_clients": ["model-report"],
-        }
-
-    def get_model_record(self, name=None):
-        if name not in (None, self.model.name(), "model-report"):
-            return None
-        return ModelRecord(
-            tag="model-report",
-            name=self.model.name(),
-            model=self.model,
-            origin="external_attached",
-            access_mode="observe",
-            server_managed=False,
-            attached_at=datetime.now().astimezone(),
-            last_seen_at=datetime.now().astimezone(),
-        )
-
-
-def test_large_numeric_arrays_are_summarized():
-    summary = summarize_value(list(range(100)))
-
-    assert summary == {
-        "summary": "numeric_array",
-        "count": 100,
-        "shape": [100],
-        "min": 0.0,
-        "max": 99.0,
-        "mean": 49.5,
-    }
-
-
-def test_audit_recorder_filters_knowledge_and_advances_cursor(tmp_path):
+def test_journal_retains_full_values_and_redacts_credentials(tmp_path):
     recorder = AuditRecorder(tmp_path)
-
-    assert should_audit_tool("pdf_search") is False
-    assert should_audit_tool("simulation_report_create") is False
-    assert should_audit_tool("physics_get_available") is True
-
-    assert recorder.record(
-        "pdf_search", {"query": "coil"}, {"success": True}, duration_ms=1
-    ) is None
-    assert recorder.record(
-        "simulation_report_create",
-        {"title": "report"},
-        {"success": True},
-        duration_ms=1,
-    ) is None
+    values = list(range(1000))
+    message = "source-error:" + "x" * 5000
     recorder.record(
-        "param_set",
-        {"name": "freq", "value": "1[kHz]"},
-        {"success": True},
-        duration_ms=12.3456,
+        "results_evaluate", {"model_name": "model-a", "password": "private"},
+        {"success": False, "real": values, "error": message}, duration_ms=12.3456,
     )
-    recorder.record(
-        "study_solve",
-        {"study_name": "Study 4"},
-        {"success": False, "error": "solver failed"},
-        duration_ms=20,
-    )
-
-    records = recorder.pending_records()
-    assert [record["tool"] for record in records] == ["param_set", "study_solve"]
-    assert records[0]["duration_ms"] == 12.346
-    assert records[1]["success"] is False
-    assert records[1]["error"] == "solver failed"
-    assert recorder.journal_path.exists()
-
-    assert recorder.advance_cursor() == 2
-    assert recorder.pending_records() == []
+    record = json.loads(recorder.journal_path.read_text().strip())
+    assert record["result"]["real"] == values
+    assert record["result"]["error"] == message
+    assert record["arguments"]["password"] == "<已隐藏>"
+    assert record["duration_ms"] == 12.346
+    assert record["success"] is False
+    assert journal_value({"model_tag": "model-a"}) == {"model_tag": "model-a"}
 
 
 @pytest.mark.asyncio
-async def test_audited_fastmcp_records_success_and_exception(tmp_path):
+async def test_wrapper_records_success_and_exact_exception(tmp_path):
     recorder = AuditRecorder(tmp_path)
-    mcp = AuditedFastMCP("audit-test", recorder=recorder)
+    mcp = AuditedFastMCP("operation-facts", recorder=recorder)
 
     @mcp.tool()
-    def param_set(name: str, value: str) -> dict:
-        return {"success": True, "name": name, "value": value}
+    def example_read(value: str) -> dict:
+        return {"success": True, "value": value}
 
     @mcp.tool()
-    def study_solve() -> dict:
-        raise RuntimeError("boom")
+    def example_failure() -> dict:
+        raise RuntimeError("COMSOL original failure")
 
-    await mcp.call_tool("param_set", {"name": "N", "value": "20"})
-    with pytest.raises(Exception, match="boom"):
-        await mcp.call_tool("study_solve", {})
+    success = _result_payload(await mcp.call_tool("example_read", {"value": "42"}))
+    failed = _result_payload(await mcp.call_tool("example_failure", {}))
+    assert success["success"] is True
+    assert success["value"] == "42"
+    assert "report_markdown" in success
+    assert failed["success"] is False
+    assert failed["operation_invoked"] is True
+    assert "COMSOL original failure" in failed["error"]
+    records = [json.loads(line) for line in recorder.journal_path.read_text().splitlines()]
+    assert [item["success"] for item in records] == [True, False]
+    assert "COMSOL original failure" in records[1]["result"]["error"]
 
-    records = recorder.pending_records()
-    assert records[0]["tool"] == "param_set"
-    assert records[0]["success"] is True
-    assert records[1]["tool"] == "study_solve"
-    assert records[1]["success"] is False
-    assert "boom" in records[1]["error"]
 
-
-def _record_demo_commands(recorder):
-    recorder.record(
-        "comsol_start",
-        {"cores": 1, "version": "6.4"},
-        {"success": True, "server_port": 2036},
-        duration_ms=100,
+def test_paged_report_preserves_complete_facts_and_model_scope(monkeypatch):
+    monkeypatch.setattr("src.core.reports.runtime_info", lambda: {"source_revision": "test"})
+    values = list(range(10000))
+    response = tool_report(
+        "results_evaluate", {"model_name": "model-a", "evaluation_tag": "ev1"},
+        {"success": True, "model_tag": "model-a", "real": values, "error_text": "e" * 20000},
     )
-    recorder.record(
-        "model_load",
-        {"file_path": "/models/2D_Coils_ACDC_N300_freq.mph"},
-        {"success": True, "model": "2D_Coils_ACDC_N300_freq"},
-        duration_ms=200,
-    )
-    recorder.record(
-        "param_set",
-        {"name": "freq", "value": "1[kHz]"},
-        {"success": True},
-        duration_ms=10,
-    )
-    recorder.record(
-        "study_solve",
-        {"study_name": "Study 4"},
-        {"success": True, "study": "Study 4"},
-        duration_ms=1500,
-    )
-    recorder.record(
-        "results_evaluate",
-        {
-            "expression": "mf.normB",
-            "unit": "T",
-            "dataset": "Study 4/Solution 4",
-        },
-        {
-            "success": True,
-            "expression": "mf.normB",
-            "unit": "T",
-            "dataset": "Study 4/Solution 4",
-            "value": [index / 1000 for index in range(100)],
-        },
-        duration_ms=50,
-    )
+    pages = [response["report_markdown"]]
+    delivery = response["report_delivery"]
+    report_id = delivery["report_id"]
+    while delivery["next_offset"] is not None:
+        page = report_page(report_id, delivery["next_offset"])
+        assert page["success"] is True
+        assert page["report_delivery"]["report_id"] == report_id
+        pages.append(page["report_markdown"])
+        delivery = page["report_delivery"]
+    content = "".join(pages)
+    payload = json.loads(content.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["real"] == values
+    assert payload["error_text"] == "e" * 20000
+    assert payload["model_tag"] == "model-a"
+    assert payload["request"]["model_name"] == "model-a"
 
 
-def test_report_contains_handoff_details_and_advances_cursor(tmp_path, monkeypatch):
-    recorder = AuditRecorder(tmp_path / "data")
-    _record_demo_commands(recorder)
-    monkeypatch.setattr(report_module, "session_manager", FakeSessionManager())
+@pytest.mark.parametrize("kind", ["diagnostic", "api", "tool"])
+def test_report_envelope_and_markdown_preserve_operation_facts(monkeypatch, kind):
+    from src.core import reports
 
-    result = create_simulation_report(
-        title="2D 线圈 Study 4 仿真报告",
-        summary="完成 1 kHz 频域磁场求解。",
-        recommended_plots=[
-            PlotRecommendation(
-                plot_name="B Field",
-                dataset_name="Study 4/Solution 4",
-                reason="查看磁通密度空间分布",
-                view_state="freq = 1000 Hz",
-            )
-        ],
-        conclusions=["磁通密度结果已完成数值检查。"],
-        recorder=recorder,
-        report_dir=tmp_path / "simulation_reports",
-    )
+    monkeypatch.setattr(reports, "runtime_info", lambda: {"source_revision": "test"})
+    request = {"model_name": "model-a", "method": "get", "args": ["L"]}
+    if kind == "diagnostic":
+        packet = reports.new_report_packet("diagnostic_parameters_read", request, success=True, status="collected")
+        packet.update(model={"model_tag": "model-a"}, findings={"parameter": reports.fact("param.get(L)", "5[mm]")})
+        response = reports.finish_diagnostic_packet(packet)
+    elif kind == "api":
+        packet = reports.new_report_packet("comsol_api_read", request, success=True, status="read")
+        packet.update(model_tag="model-a", value="5[mm]")
+        response = reports.finish_api_packet(packet)
+    else:
+        response = reports.tool_report("example_read", request, {"success": True, "model_tag": "model-a", "value": "5[mm]"})
+    assert response["request"] == request
+    assert type(response["report_version"]) is int
+    assert response["report_version"] == reports.REPORT_VERSION
+    assert response["model_tag"] == "model-a"
+    assert response["model_reference"] == "model-a"
+    assert isinstance(response["summary"], str)
+    assert response["errors"] == []
+    payload = json.loads(response["report_markdown"].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["request"] == request
+    assert payload["success"] is True
+    assert "5[mm]" in response["report_markdown"]
 
+
+def test_report_preserves_stale_model_error_with_label_metadata():
+    response = tool_report("comsol_api_read", {"model_name": "model-a"}, {
+        "success": False, "model": "Model label", "model_tag": "model-a",
+        "error": "Model was removed", "error_code": "model_stale",
+    })
+    assert response["success"] is False
+    assert response["model"] == "Model label"
+    assert response["errors"] == ["Model was removed"]
+
+
+def test_report_delivery_failure_keeps_completed_write_and_exact_readback(monkeypatch):
+    from src.core import reports
+
+    def unavailable(*args):
+        raise RuntimeError("report cache unavailable")
+
+    monkeypatch.setattr(reports, "paginate_report", unavailable)
+    packet = reports.new_report_packet("comsol_api_write", {"model_name": "model-a"}, success=True, status="verified")
+    packet.update(write_attempted=True, write_returned=True, after=[{"actual": "5[mm]", "passed": True}])
+    result = reports.finish_api_packet(packet)
     assert result["success"] is True
-    assert result["command_count"] == 5
-    assert result["server_port"] == 2036
-    assert result["model_tag"] == "model-report"
-    assert result["origin"] == "external_attached"
-    assert result["access_mode"] == "observe"
-    assert result["used_by_other_clients"] is True
-    assert result["stale"] is False
-    assert result["saved_to_disk"] is False
-    assert result["plot_checks"][0]["plot_exists"] is True
-    assert result["plot_checks"][0]["dataset_exists"] is True
-    assert recorder.pending_records() == []
-
-    report_path = Path(result["report_path"])
-    content = report_path.read_text(encoding="utf-8")
-    assert "Study 4/Solution 4" in content
-    assert "Results → B Field" in content
-    assert "mf.normB" in content
-    assert '"summary":"numeric_array"' in content
-    assert "未调用模型保存工具" in content
-    assert "模型 tag：`model-report`" in content
-    assert "模型来源：`external_attached`" in content
-    assert "MCP 访问模式：`observe`" in content
-    assert "其他客户端正在使用：`是`" in content
-    assert "服务器内存模型（未保存）" in content
-    assert "共享服务器：`localhost:2036`" in content
-    assert "`study_solve`" in content
-    assert "1500.0 ms" in content
-
-    recorder.record(
-        "comsol_status", {}, {"connected": True}, duration_ms=1
-    )
-    second = create_simulation_report(
-        title="第二次报告",
-        summary="只记录新命令。",
-        recommended_plots=[],
-        recorder=recorder,
-        report_dir=tmp_path / "simulation_reports",
-    )
-    assert second["command_count"] == 1
-    assert second["report_path"] != result["report_path"]
-    assert "未提供推荐结果图。" in second["warnings"]
-
-
-def test_report_warns_for_missing_plot_and_dataset(tmp_path, monkeypatch):
-    recorder = AuditRecorder(tmp_path / "data")
-    recorder.record("comsol_status", {}, {"connected": True}, duration_ms=1)
-    monkeypatch.setattr(report_module, "session_manager", FakeSessionManager())
-
-    result = create_simulation_report(
-        title="检查缺失结果图",
-        summary="验证报告警告。",
-        recommended_plots=[
-            PlotRecommendation(
-                plot_name="Missing Plot",
-                dataset_name="Missing Dataset",
-                reason="测试",
-            )
-        ],
-        recorder=recorder,
-        report_dir=tmp_path / "reports",
-    )
-
-    assert result["success"] is True
-    assert result["plot_checks"][0]["plot_exists"] is False
-    assert result["plot_checks"][0]["dataset_exists"] is False
-    assert any("Missing Plot" in warning for warning in result["warnings"])
-    assert any("Missing Dataset" in warning for warning in result["warnings"])
+    assert result["write_returned"] is True
+    assert result["after"] == packet["after"]
+    assert "report cache unavailable" in result["report_warning"]
+    assert '"actual": "5[mm]"' in result["report_markdown"]

@@ -4,13 +4,17 @@ from pathlib import Path
 
 import pytest
 
-import src.tools.session as session_module
-from src.tools.session import SessionManager
+import src.core.session as session_module
+from src.core.session import SessionManager
 
 
 class FakeJava:
     def __init__(self):
         self.observed_tags = []
+        self.server_tags = ["model1"]
+
+    def tags(self):
+        return self.server_tags
 
     def modelsUsedByOtherClients(self):
         return self.observed_tags
@@ -169,7 +173,6 @@ def test_status_detects_desktop_observer(manager):
     assert status["models_used_by_other_clients"] == ["model1"]
     assert status["models"][0]["tag"] == "model1"
     assert status["models"][0]["origin"] == "mcp_loaded"
-    assert status["models"][0]["access_mode"] == "write"
     assert status["models"][0]["server_managed"] is True
     assert status["models"][0]["is_current"] is True
     assert status["models"][0]["file"] == "/tmp/demo.mph"

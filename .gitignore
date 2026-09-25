@@ -34,9 +34,7 @@ comsol_models/
 simulation_reports/
 .comsol-mcp-data/
 
-# Documentation search inputs and generated indexes
-pdf/
-knowledge_base/
+# Local reference files and databases
 *.db
 *.pdf
 *.sqlite3

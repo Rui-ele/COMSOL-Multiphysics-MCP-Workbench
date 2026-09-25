@@ -1,332 +1,74 @@
-"""Study and solving tools for COMSOL MCP Server."""
+"""Start and monitor explicitly targeted asynchronous COMSOL studies."""
 
-from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
-from .session import session_manager
-from ..async_handler.solver import async_solver
+from ..core.session import session_manager
+from ..core.solver import async_solver
 
 
 def register_study_tools(mcp: FastMCP) -> None:
-    """Register study and solving tools with the MCP server."""
-    
+    """Register a single solver entry and run-specific monitoring tools."""
+
     @mcp.tool()
-    def study_list(model_name: Optional[str] = None) -> dict:
+    def study_solve(model_name: str, study_tag: str) -> dict:
+        """Start the exact existing study in the background and return run_id.
+
+        model_name and study_tag are actual COMSOL tags obtained by discovery or
+        reading. Calls Java study(study_tag).run(); COMSOL executes that study's
+        configured sequence. The response acknowledges startup; query the run
+        with study_get_progress or study_wait to obtain completion or failure.
         """
-        List all studies in a model.
-
-        Args:
-            model_name: Model name (default: current model)
-
-        Returns:
-            List of study names with their types
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-
         try:
-            studies = model.studies()
-
-            study_info = []
-            for study_name in studies:
-                info = {"name": study_name}
-                try:
-                    study_node = model / "studies" / study_name
-                    children = [child.name() for child in study_node.children()]
-                    info["steps"] = children
-                except Exception:
-                    pass
-                study_info.append(info)
-
-            return {
-                "success": True,
-                "studies": study_info,
-                "count": len(study_info),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to list studies: {str(e)}"}
+            record = session_manager.get_model_record(model_name)
+            if record is None or record.tag != model_name:
+                raise ValueError(f"Registered model tag not found: {model_name}")
+            java = record.model.java
+            tags = [str(tag) for tag in java.study().tags()]
+            if study_tag not in tags:
+                return {"success": False, "error": f"Study tag not found: {study_tag}",
+                        "model_tag": model_name, "candidate_study_tags": tags,
+                        "write_attempted": False}
+            return async_solver.start_solve(java.study(study_tag), model_name, study_tag)
+        except Exception as exc:
+            return {"success": False, "model_tag": model_name, "study_tag": study_tag,
+                    "write_attempted": False, "error": str(exc),
+                    "error_type": type(exc).__name__}
 
     @mcp.tool()
-    def study_create(
-        study_type: str = "Stationary",
-        study_name: Optional[str] = None,
-        model_name: Optional[str] = None
-    ) -> dict:
+    def study_get_progress(run_id: str) -> dict:
+        """Return this run's queued/running/completed/failed state and exact errors.
+
+        Progress percentages are unavailable and returned as null. A completed
+        state means study.run() returned; technical acceptance uses the task's
+        result checks. Runs belong to this MCP process and remain identified
+        after a later study starts.
         """
-        Create a new study in the model.
-
-        Common study types:
-        - "Stationary": Stationary study (most common for electrostatics, structural)
-        - "TimeDependent": Time-dependent study
-        - "Eigenfrequency": Eigenfrequency analysis
-        - "Frequency": Frequency domain study
-        - "Perturbation": Perturbation study
-
-        Args:
-            study_type: Type of study to create
-            study_name: Optional name/tag for the study
-            model_name: Model name (default: current model)
-
-        Returns:
-            Created study info
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-
         try:
-            jm = model.java
-            existing_studies = jm.study().size()
-            study_tag = study_name or f"std{existing_studies + 1}"
+            return {"success": True, "run": async_solver.get_progress(run_id)}
+        except Exception as exc:
+            return {"success": False, "run_id": run_id, "error": str(exc)}
 
-            TYPE_MAP = {
-                "Stationary": "stat",
-                "TimeDependent": "time",
-                "Eigenfrequency": "eig",
-                "Frequency": "freq",
-                "Perturbation": "pert",
-                "stat": "stat",
-                "time": "time",
-                "eig": "eig",
-                "freq": "freq",
-            }
+    @mcp.tool()
+    def study_cancel(run_id: str) -> dict:
+        """Request cancellation for a run and report actual cancellation support.
 
-            step_type = TYPE_MAP.get(study_type, study_type)
+        This COMSOL connection currently has no confirmed per-run cancellation
+        API. It returns cancellation_unsupported with submitted_to_comsol=false;
+        the run keeps its real status. COMSOL Desktop can stop the computation.
+        """
+        try:
+            return async_solver.cancel(run_id)
+        except Exception as exc:
+            return {"success": False, "run_id": run_id, "error": str(exc)}
 
-            study = jm.study().create(study_tag)
-            study.create("step1", step_type)
+    @mcp.tool()
+    def study_wait(run_id: str, timeout: float = 30) -> dict:
+        """Wait 0–60 seconds for this run; timeout leaves computation running.
 
-            return {
-                "success": True,
-                "study": study_tag,
-                "type": study_type,
-                "step_type": step_type,
-                "model": model.name(),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to create study: {str(e)}"}
-    
-    @mcp.tool()
-    def study_solve(
-        study_name: Optional[str] = None,
-        model_name: Optional[str] = None,
-        wait: bool = True,
-        timeout: Optional[float] = None
-    ) -> dict:
+        finished reports terminal state, and run.status distinguishes completed
+        from failed. Reuse the same run_id for subsequent status/wait calls.
         """
-        Solve a study (synchronous by default).
-        
-        Args:
-            study_name: Study to solve (None for all studies)
-            model_name: Model name (default: current model)
-            wait: If True, wait for completion; if False, return immediately
-            timeout: Maximum wait time in seconds (only used if wait=True)
-        
-        Returns:
-            Solution status, or error message
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        if async_solver.is_running:
-            return {
-                "success": False,
-                "error": "Another solving operation is in progress. Use study_get_progress to check status."
-            }
-        
         try:
-            if wait:
-                model.solve(study_name)
-                return {
-                    "success": True,
-                    "study": study_name,
-                    "message": "Solving completed.",
-                }
-            else:
-                started = async_solver.start_solve(model, study_name)
-                if started:
-                    return {
-                        "success": True,
-                        "study": study_name,
-                        "message": "Solving started in background. Use study_get_progress to monitor.",
-                        "async": True,
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "error": "Failed to start async solver."
-                    }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to solve: {str(e)}"}
-    
-    @mcp.tool()
-    def study_solve_async(
-        study_name: Optional[str] = None,
-        model_name: Optional[str] = None
-    ) -> dict:
-        """
-        Start solving a study in the background (asynchronous).
-        
-        Use study_get_progress to monitor progress and study_cancel to stop.
-        
-        Args:
-            study_name: Study to solve (None for all studies)
-            model_name: Model name (default: current model)
-        
-        Returns:
-            Confirmation that solving started, or error message
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        if async_solver.is_running:
-            progress = async_solver.get_progress()
-            return {
-                "success": False,
-                "error": "Another solving operation is already in progress.",
-                "current_progress": progress,
-            }
-        
-        try:
-            started = async_solver.start_solve(model, study_name)
-            if started:
-                return {
-                    "success": True,
-                    "study": study_name,
-                    "model": model.name(),
-                    "message": "Solving started in background.",
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": "Failed to start async solver."
-                }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to start solving: {str(e)}"}
-    
-    @mcp.tool()
-    def study_get_progress() -> dict:
-        """
-        Get the progress of the current solving operation.
-        
-        Returns:
-            Progress information including status, percentage, and elapsed time
-        """
-        progress = async_solver.get_progress()
-        return {
-            "success": True,
-            "progress": progress,
-        }
-    
-    @mcp.tool()
-    def study_cancel() -> dict:
-        """
-        Cancel the current solving operation.
-        
-        Note: The solver may take a moment to respond to cancellation.
-        
-        Returns:
-            Cancellation status
-        """
-        if async_solver.cancel():
-            return {
-                "success": True,
-                "message": "Cancellation requested. Solver will stop at next checkpoint.",
-            }
-        return {
-            "success": False,
-            "message": "No solving operation in progress.",
-        }
-    
-    @mcp.tool()
-    def study_wait(timeout: Optional[float] = None) -> dict:
-        """
-        Wait for the current solving operation to complete.
-        
-        Args:
-            timeout: Maximum time to wait in seconds (None for indefinite)
-        
-        Returns:
-            Final progress status
-        """
-        completed = async_solver.wait(timeout=timeout)
-        progress = async_solver.get_progress()
-        
-        return {
-            "success": True,
-            "completed": completed,
-            "progress": progress,
-        }
-    
-    @mcp.tool()
-    def solutions_list(model_name: Optional[str] = None) -> dict:
-        """
-        List all solutions in a model.
-        
-        Args:
-            model_name: Model name (default: current model)
-        
-        Returns:
-            List of solution configurations
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        try:
-            solutions = model.solutions()
-            return {
-                "success": True,
-                "solutions": solutions,
-                "count": len(solutions),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to list solutions: {str(e)}"}
-    
-    @mcp.tool()
-    def datasets_list(model_name: Optional[str] = None) -> dict:
-        """
-        List all datasets in a model.
-        
-        Datasets represent solution data that can be evaluated or visualized.
-        
-        Args:
-            model_name: Model name (default: current model)
-        
-        Returns:
-            List of dataset names
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        try:
-            datasets = model.datasets()
-            return {
-                "success": True,
-                "datasets": datasets,
-                "count": len(datasets),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to list datasets: {str(e)}"}
+            return async_solver.wait(run_id, timeout)
+        except Exception as exc:
+            return {"success": False, "run_id": run_id, "error": str(exc)}

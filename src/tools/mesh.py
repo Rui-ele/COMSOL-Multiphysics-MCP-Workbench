@@ -1,131 +1,50 @@
-"""Mesh tools for COMSOL MCP Server."""
+"""Execute one explicitly identified mesh sequence."""
 
-from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
-from .session import session_manager
+from ..core.session import session_manager
+from ..core.reports import read
 
 
 def register_mesh_tools(mcp: FastMCP) -> None:
-    """Register mesh tools with the MCP server."""
-    
     @mcp.tool()
-    def mesh_list(model_name: Optional[str] = None) -> dict:
+    def mesh_build(model_name: str, component_tag: str, mesh_tag: str) -> dict:
+        """Run one existing mesh sequence and read its completion state.
+
+        Supply actual model/component/mesh tags. Calls component.mesh(mesh_tag)
+        .run() with the node's existing settings. Mesh node creation and property
+        changes use comsol_api_write. The response preserves run failures and
+        independently reports isComplete(), current feature, and problem tags.
         """
-        List all mesh sequences in a model.
-        
-        Args:
-            model_name: Model name (default: current model)
-        
-        Returns:
-            List of mesh sequence names
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
+        source = f"model({model_name}).component({component_tag}).mesh({mesh_tag})"
+        result = {"success": False, "model_tag": model_name, "node": source,
+                  "component_tag": component_tag, "mesh_tag": mesh_tag,
+                  "method": "run", "args": [], "write_attempted": False,
+                  "execution_completed": False}
+        mesh = None
         try:
-            meshes = model.meshes()
-            return {
-                "success": True,
-                "meshes": meshes,
-                "count": len(meshes),
+            record = session_manager.get_model_record(model_name)
+            if record is None or record.tag != model_name:
+                raise ValueError(f"Registered model tag not found: {model_name}")
+            java = record.model.java
+            if component_tag not in [str(tag) for tag in java.component().tags()]:
+                raise ValueError(f"Component tag not found: {component_tag}")
+            component = java.component(component_tag)
+            if mesh_tag not in [str(tag) for tag in component.mesh().tags()]:
+                raise ValueError(f"Mesh tag not found in {component_tag}: {mesh_tag}")
+            mesh = component.mesh(mesh_tag)
+            result["write_attempted"] = True
+            mesh.run()
+            result.update(success=True, execution_completed=True)
+        except Exception as exc:
+            result.update(error=str(exc), error_type=type(exc).__name__)
+        if mesh is not None and result["write_attempted"]:
+            result["readback"] = {
+                "is_complete": read(source + ".isComplete()", lambda: bool(mesh.isComplete())),
+                "current_feature": read(source + ".current()", lambda: mesh.current()),
+                "problem_tags": read(source + ".problems()", lambda: mesh.problems()),
             }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to list meshes: {str(e)}"}
-    
-    @mcp.tool()
-    def mesh_create(
-        mesh_name: Optional[str] = None,
-        model_name: Optional[str] = None
-    ) -> dict:
-        """
-        Run a mesh sequence to generate the mesh.
-        
-        This executes the meshing operations defined in the mesh sequence.
-        
-        Args:
-            mesh_name: Mesh sequence name (default: run all mesh sequences)
-            model_name: Model name (default: current model)
-        
-        Returns:
-            Mesh generation status
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        try:
-            model.mesh(mesh_name)
-            return {
-                "success": True,
-                "mesh": mesh_name,
-                "message": f"Mesh created: {mesh_name or 'all meshes'}",
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to create mesh: {str(e)}"}
-    
-    @mcp.tool()
-    def mesh_info(
-        mesh_name: Optional[str] = None,
-        model_name: Optional[str] = None
-    ) -> dict:
-        """
-        Get information about a mesh.
-        
-        Args:
-            mesh_name: Mesh sequence name (default: first mesh)
-            model_name: Model name (default: current model)
-        
-        Returns:
-            Mesh statistics including element counts
-        """
-        model = session_manager.get_model(model_name)
-        if model is None:
-            return {
-                "success": False,
-                "error": f"Model not found: {model_name or 'no current model'}"
-            }
-        
-        try:
-            meshes = model.meshes()
-            if not meshes:
-                return {"success": False, "error": "No meshes defined in model."}
-            
-            target = mesh_name or meshes[0]
-            if target not in meshes:
-                return {"success": False, "error": f"Mesh not found: {target}"}
-            
-            mesh_node = model / "meshes" / target
-            
-            info = {
-                "name": target,
-            }
-            
-            try:
-                java_mesh = mesh_node.java
-                if hasattr(java_mesh, 'getVertex'):
-                    info["num_vertices"] = java_mesh.getVertex().size()
-                if hasattr(java_mesh, 'getElement'):
-                    info["num_elements"] = java_mesh.getElement().size()
-            except Exception:
-                pass
-            
-            try:
-                children = [child.name() for child in mesh_node.children()]
-                info["features"] = children
-            except Exception:
-                pass
-            
-            return {
-                "success": True,
-                "mesh": info,
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to get mesh info: {str(e)}"}
+            completion = result["readback"]["is_complete"]
+            if result["execution_completed"] and completion.get("value") is False:
+                result.update(success=False, error="COMSOL returned from run() but reports an incomplete mesh.")
+        return result

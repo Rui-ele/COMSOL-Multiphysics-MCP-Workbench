@@ -7,12 +7,10 @@ import pytest
 
 import src.tools.model as model_module
 from src.tools.model import register_model_tools
-from src.tools.session import AmbiguousModelError, SessionManager
+from src.core.session import AmbiguousModelError, SessionManager
 
 
 class FakeModelJava:
-    copy_count = 0
-
     def __init__(
         self,
         tag: str,
@@ -31,13 +29,10 @@ class FakeModelJava:
             self._label = value
         return self._label
 
-    def createCopy(self):
-        type(self).copy_count += 1
-        return FakeModelJava(
-            f"{self._tag}_copy{type(self).copy_count}",
-            self._label,
-            self._file_path,
-        )
+    def save(self, file_path, save_copy=False):
+        Path(file_path).write_bytes(b"fake MPH snapshot")
+        if not save_copy:
+            self._file_path = Path(file_path)
 
     def getFilePath(self):
         return str(self._file_path) if self._file_path else ""
@@ -63,7 +58,7 @@ class FakeModel:
         return self.java.label()
 
     def file(self):
-        return self._file_path
+        return self.java._file_path
 
     def version(self):
         return "6.4"
@@ -85,6 +80,21 @@ class FakeClientJava:
 
     def add_model(self, model):
         self.server_models[model.java.tag()] = model.java
+
+    def create(self, tag):
+        java = FakeModelJava(tag, tag)
+        self.server_models[tag] = java
+        return java
+
+    def load(self, tag, file_path):
+        java = FakeModelJava(tag, Path(file_path).stem, Path(file_path))
+        self.server_models[tag] = java
+        return java
+
+    def loadCopy(self, tag, file_path):
+        java = FakeModelJava(tag, Path(file_path).stem)
+        self.server_models[tag] = java
+        return java
 
     def remove(self, tag):
         self.server_models.pop(tag, None)
@@ -150,7 +160,7 @@ class ToolRegistry:
 
 
 @pytest.fixture
-def manager():
+def manager(monkeypatch):
     sm = SessionManager()
     sm._client = FakeClient()
     sm._server = None
@@ -161,7 +171,7 @@ def manager():
     sm._models.clear()
     sm._current_model_tag = None
     sm._busy_handler = None
-    FakeModelJava.copy_count = 0
+    monkeypatch.setattr(model_module.mph, "Model", FakeModel.from_java)
     yield sm
     sm._client = None
     sm._server = None
@@ -216,11 +226,11 @@ def test_exact_tag_wins_over_a_matching_display_name(manager):
 
 def test_current_identity_survives_rename_and_metadata_is_serializable(manager):
     model = FakeModel("before", "stable-tag")
+    manager.client.java.add_model(model)
     record = manager.add_model(model, origin="mcp_cloned")
 
     assert manager.current_model == "before"
     assert manager.current_model_tag == "stable-tag"
-    assert record.access_mode == "write"
     assert record.server_managed is True
     assert record.attached_at.tzinfo is not None
     datetime.fromisoformat(record.metadata()["attached_at"])
@@ -238,24 +248,6 @@ def test_current_identity_survives_rename_and_metadata_is_serializable(manager):
     assert status["models"][0]["tag"] == "stable-tag"
     assert status["current_model"] == "after"
     assert status["current_model_tag"] == "stable-tag"
-
-
-def test_set_current_and_remove_use_tags_without_harming_same_name(manager):
-    first = FakeModel("duplicate", "model-a")
-    second = FakeModel("duplicate", "model-b")
-    manager.add_model(first)
-    manager.add_model(second)
-
-    assert manager.set_current_model("model-b") is True
-    assert manager.current_model_tag == "model-b"
-    assert manager.remove_model("model-a") is True
-
-    assert set(manager.models) == {"model-b"}
-    assert manager.get_model("duplicate") is second
-    assert manager.client.removed == ["model-a"]
-    assert manager.remove_model("duplicate") is True
-    assert manager.models == {}
-    assert manager.client.removed == ["model-a", "model-b"]
 
 
 def test_disconnect_clears_stale_registry_even_without_live_connection(manager):
@@ -331,27 +323,22 @@ def test_model_tools_record_origins_and_expose_registry_metadata(
         "model_discover",
         "model_attach",
         "model_detach",
-        "model_access_set",
-        "model_create_component",
-        "model_list_components",
         "model_save",
-        "model_save_version",
         "model_list",
         "model_set_current",
         "model_clone",
         "model_remove",
-        "model_inspect",
     }
 
     model_path = tmp_path / "loaded_demo.mph"
     model_path.touch()
 
-    loaded = model_tools["model_load"](str(model_path), set_current=False)
-    created = model_tools["model_create"]("created_demo", set_current=True)
+    loaded = model_tools["model_load"](str(model_path), "loaded1", set_current=False)
+    created = model_tools["model_create"]("created1", label="created_demo", set_current=True)
+    snapshot = tmp_path / "clone.mph"
     cloned = model_tools["model_clone"](
-        created["model_tag"],
-        new_name="cloned_demo",
-        set_current=True,
+        created["model_tag"], new_tag="clone1", file_path=str(snapshot),
+        label="cloned_demo", set_current=True,
     )
     listed = model_tools["model_list"]()
 
@@ -360,24 +347,26 @@ def test_model_tools_record_origins_and_expose_registry_metadata(
     assert created["success"] is True
     assert created["model"]["tag"] == "created1"
     assert cloned["success"] is True
-    assert cloned["model_tag"] == "created1_copy1"
-    assert listed["current_model"] == "cloned_demo"
-    assert listed["current_model_tag"] == "created1_copy1"
+    assert cloned["model_tag"] == "clone1"
+    assert cloned["completed_stages"] == ["save_snapshot", "load_copy"]
+    assert snapshot.is_file()
+    assert manager.current_model == "cloned_demo"
+    assert manager.current_model_tag == "clone1"
 
     by_tag = {item["tag"]: item for item in listed["models"]}
     assert by_tag["loaded1"]["origin"] == "mcp_loaded"
     assert by_tag["created1"]["origin"] == "mcp_created"
-    assert by_tag["created1_copy1"]["origin"] == "mcp_cloned"
-    assert by_tag["created1_copy1"]["access_mode"] == "write"
-    assert by_tag["created1_copy1"]["server_managed"] is True
-    assert by_tag["created1_copy1"]["is_current"] is True
-    assert "attached_at" in by_tag["created1_copy1"]
+    assert by_tag["clone1"]["origin"] == "mcp_cloned"
+    assert by_tag["clone1"]["server_managed"] is True
+    assert by_tag["clone1"]["is_current"] is True
+    assert "attached_at" in by_tag["clone1"]
     assert by_tag["loaded1"]["name"] == "loaded_demo"
-    assert by_tag["loaded1"]["file"] == model_path
-    assert by_tag["loaded1"]["comsol_version"] == "6.4"
+    assert manager.get_model_record("loaded1").file_path == str(model_path)
+    assert manager.get_model_record("clone1").file_path is None
+    assert manager.get_model_record("created1").file_path is None
 
 
-def test_attach_is_exact_observe_only_and_idempotent(
+def test_attach_is_exact_and_idempotent(
     manager,
     model_tools,
 ):
@@ -395,9 +384,7 @@ def test_attach_is_exact_observe_only_and_idempotent(
     assert discovered["models"][0]["registered"] is False
     assert attached["success"] is True
     assert attached["attached"] is True
-    assert attached["already_registered"] is False
     assert attached["model"]["origin"] == "external_attached"
-    assert attached["model"]["access_mode"] == "observe"
     assert attached["model"]["server_managed"] is False
     assert attached["model"]["is_current"] is False
     assert manager.current_model_tag == "desktop-tag"
@@ -407,57 +394,9 @@ def test_attach_is_exact_observe_only_and_idempotent(
 
     assert repeated["success"] is True
     assert repeated["attached"] is False
-    assert repeated["already_registered"] is True
     assert manager.get_model_record("desktop-tag").attached_at == first_attached_at
     assert manager.get_model_record("desktop-tag").origin == "external_attached"
     assert listed["models"][0]["tag"] == "desktop-tag"
-
-
-def test_model_access_set_switches_by_tag_and_is_idempotent(
-    manager,
-    model_tools,
-):
-    external = FakeModel("desktop_model", "desktop-tag")
-    manager.client.java.add_model(external)
-    model_tools["model_attach"]("desktop-tag")
-
-    unchanged = model_tools["model_access_set"]("desktop-tag", "observe")
-    elevated = model_tools["model_access_set"]("desktop-tag", "write")
-    lowered = model_tools["model_access_set"]("desktop-tag", "observe")
-
-    assert unchanged["success"] is True
-    assert unchanged["previous_access_mode"] == "observe"
-    assert unchanged["access_mode"] == "observe"
-    assert unchanged["changed"] is False
-    assert elevated["success"] is True
-    assert elevated["model"] == "desktop_model"
-    assert elevated["model_tag"] == "desktop-tag"
-    assert elevated["previous_access_mode"] == "observe"
-    assert elevated["access_mode"] == "write"
-    assert elevated["changed"] is True
-    assert lowered["previous_access_mode"] == "write"
-    assert lowered["access_mode"] == "observe"
-    assert lowered["changed"] is True
-    assert manager.get_model_record("desktop-tag").access_mode == "observe"
-
-
-def test_model_access_set_rejects_invalid_and_ambiguous_references(
-    manager,
-    model_tools,
-):
-    manager.add_model(FakeModel("duplicate", "model-a"), access_mode="observe")
-    manager.add_model(FakeModel("duplicate", "model-b"), access_mode="observe")
-
-    invalid = model_tools["model_access_set"]("model-a", "admin")
-    ambiguous = model_tools["model_access_set"]("duplicate", "write")
-    missing = model_tools["model_access_set"]("missing", "write")
-
-    assert invalid["success"] is False
-    assert "observe" in invalid["error"]
-    assert manager.get_model_record("model-a").access_mode == "observe"
-    assert ambiguous["success"] is False
-    assert ambiguous["candidate_tags"] == ["model-a", "model-b"]
-    assert missing == {"success": False, "error": "Model not found: missing"}
 
 
 def test_attach_failure_never_partially_registers_model(
@@ -468,21 +407,15 @@ def test_attach_failure_never_partially_registers_model(
     manager.client.java.add_model(broken)
     manager.client.java.broken_tags.add("broken-tag")
 
-    missing = model_tools["model_attach"]("missing-tag")
-    wrapping_failed = model_tools["model_attach"]("broken-tag")
-
-    assert missing["success"] is False
-    assert "not found" in missing["error"]
-    assert wrapping_failed["success"] is False
-    assert "Could not access" in wrapping_failed["error"]
+    with pytest.raises(ValueError, match="not found"):
+        model_tools["model_attach"]("missing-tag")
+    with pytest.raises(RuntimeError, match="Could not access"):
+        model_tools["model_attach"]("broken-tag")
     assert manager.models == {}
     assert manager.current_model_tag is None
 
 
-def test_detach_preserves_server_and_refuses_managed_models(
-    manager,
-    model_tools,
-):
+def test_detach_preserves_server_models_of_either_origin(manager, model_tools):
     managed = FakeModel("managed", "managed-tag")
     external = FakeModel("external", "external-tag")
     manager.client.java.add_model(managed)
@@ -490,38 +423,43 @@ def test_detach_preserves_server_and_refuses_managed_models(
     manager.add_model(managed, origin="mcp_created")
     model_tools["model_attach"]("external-tag", set_current=True)
 
-    detached = model_tools["model_detach"]("external")
-    refused = model_tools["model_detach"]("managed-tag")
-
-    assert detached["success"] is True
-    assert detached["detached_tag"] == "external-tag"
-    assert detached["server_model_preserved"] is True
-    assert "external-tag" in manager.client.java.tags()
-    assert manager.client.remove_calls == 0
-    assert manager.current_model_tag == "managed-tag"
-    assert refused["success"] is False
-    assert "model_remove" in refused["error"]
-    assert "managed-tag" in manager.models
+    for tag in ("external-tag", "managed-tag"):
+        detached = model_tools["model_detach"](tag)
+        assert detached["success"] is True
+        assert detached["model_tag"] == tag
+        assert detached["server_model_preserved"] is True
+        assert tag in manager.client.java.tags()
+    assert manager.models == {}
 
 
-def test_model_tools_return_safe_ambiguity_and_remove_by_tag(
-    manager,
-    model_tools,
-):
-    manager.add_model(FakeModel("duplicate", "model-a"))
-    manager.add_model(FakeModel("duplicate", "model-b"))
+def test_model_tools_preserve_ambiguity_and_remove_by_tag(manager, model_tools):
+    for tag in ("model-a", "model-b"):
+        model = FakeModel("duplicate", tag)
+        manager.client.java.add_model(model)
+        manager.add_model(model)
 
-    ambiguous = model_tools["model_set_current"]("duplicate")
+    with pytest.raises(AmbiguousModelError) as error:
+        model_tools["model_set_current"]("duplicate")
+    assert error.value.candidate_tags == ["model-a", "model-b"]
     selected = model_tools["model_set_current"]("model-b")
     removed = model_tools["model_remove"]("model-a")
 
-    assert ambiguous["success"] is False
-    assert ambiguous["candidate_tags"] == ["model-a", "model-b"]
-    assert selected == {
-        "success": True,
-        "current_model": "duplicate",
-        "current_model_tag": "model-b",
-    }
+    assert selected == {"success": True, "current_model": "duplicate", "model_tag": "model-b"}
     assert removed["success"] is True
-    assert removed["removed_tag"] == "model-a"
+    assert removed["model_tag"] == "model-a"
+    assert removed["tag_present_after"] is False
     assert manager.current_model_tag == "model-b"
+
+
+def test_registration_owns_explicit_current_marker_and_removal(manager):
+    first = manager.add_model(FakeModel("first", "model-a"), set_current=False)
+    assert manager.current_model_tag is None
+    second = manager.add_model(FakeModel("second", "model-b"), set_current=True)
+    assert manager.current_model_tag == second.tag
+    manager.add_model(first.model, set_current=False)
+    assert manager.current_model_tag == second.tag
+    manager.add_model(first.model, set_current=True)
+    assert manager.current_model_tag == first.tag
+    assert manager.unregister_model(first.tag) is first
+    assert first.tag not in manager.models
+    assert manager.current_model_tag == second.tag

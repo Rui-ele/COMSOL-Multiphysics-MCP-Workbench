@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.verify_external_handoff import (
+from tests.integration.handoff_runner import (
     AcceptanceFailure,
     assert_result,
     executable_path,
@@ -44,24 +44,24 @@ def test_tool_payload_reads_mcp_text_content():
 def test_assert_result_checks_stable_error_code():
     payload = {
         "success": False,
-        "error_code": "model_write_access_required",
+        "error_code": "model_stale",
     }
 
     assert_result(
-        "observe_denial",
+        "stale_model",
         payload,
         success=False,
-        error_code="model_write_access_required",
+        error_code="model_stale",
     )
     with pytest.raises(AcceptanceFailure) as captured:
         assert_result(
-            "observe_denial",
+            "stale_model",
             payload,
             success=False,
             error_code="unexpected",
         )
 
-    assert captured.value.stage == "observe_denial"
+    assert captured.value.stage == "stale_model"
 
 
 def test_find_acceptance_failure_unwraps_task_group_shape():
@@ -95,12 +95,13 @@ def test_acceptance_report_redacts_credentials_and_records_boundaries(tmp_path):
         },
         "values": {
             "initial": "1",
-            "after_observe_denial": "1",
+            "after_stale_model": "1",
             "after_write": "42",
             "after_detach": "42",
             "after_mcp_disconnect": "42",
         },
-        "forbidden_file_exists": False,
+        "saved_file": {"path": "/temporary/copy.mph", "size_bytes": 42},
+        "model_removed": True,
         "cleanup": {
             "server_running_after_mcp_disconnect": True,
             "client_a_stopped": True,
