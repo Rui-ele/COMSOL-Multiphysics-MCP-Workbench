@@ -324,6 +324,15 @@ def run_client_a_worker(port: int, model_name: str) -> int:
                             "model": worker_state(client, tag),
                         }
                     )
+                elif command == "remove":
+                    client.java.remove(tag)
+                    emit_worker(
+                        {
+                            "kind": "remove",
+                            "request_id": request.get("request_id"),
+                            "model": worker_state(client, tag),
+                        }
+                    )
                 elif command == "shutdown":
                     client.disconnect()
                     client = None
@@ -419,6 +428,9 @@ class ClientAController:
     async def state(self) -> dict[str, Any]:
         return (await self.command("state", "state"))["model"]
 
+    async def remove(self) -> dict[str, Any]:
+        return (await self.command("remove", "remove"))["model"]
+
     @property
     def stderr_tail(self) -> list[str]:
         return redacted_log_tail(self._stderr_tail)
@@ -485,24 +497,21 @@ def verify_audit(
     records: list[dict[str, Any]],
     *,
     model_tag: str,
+    cleanup_model_tag: str,
 ) -> dict[str, Any]:
-    """Verify the journal records the explicit write, save, and removal."""
+    """Verify the journal records both clients' model lifecycle accurately."""
     expected = {
-        ("comsol_api_write", True, None),
-        ("model_save", True, None),
-        ("model_remove", True, None),
+        ("comsol_api_write", True, model_tag),
+        ("model_save", True, model_tag),
+        ("model_remove", False, model_tag),
+        ("model_remove", True, cleanup_model_tag),
     }
-    found: set[tuple[str, bool, str | None]] = set()
+    found: set[tuple[str, bool, str]] = set()
     for record in records:
-        payload = record.get("result")
-        error_code = payload.get("error_code") if isinstance(payload, dict) else None
-        key = (record.get("tool"), bool(record.get("success")), error_code)
         arguments = record.get("arguments")
-        same_model = (
-            isinstance(arguments, dict)
-            and arguments.get("model_name") == model_tag
-        )
-        if key in expected and same_model:
+        tag = arguments.get("model_name") if isinstance(arguments, dict) else None
+        key = (record.get("tool"), bool(record.get("success")), tag)
+        if key in expected:
             found.add(key)
     missing = expected - found
     if missing:
@@ -515,6 +524,7 @@ def verify_audit(
         "record_count": len(records),
         "required_events": len(found),
         "model_tag": model_tag,
+        "cleanup_model_tag": cleanup_model_tag,
     }
 
 
@@ -562,14 +572,37 @@ async def run_mcp_flow(
         cwd=str(PROJECT_ROOT), env=comsol_environment(data_dir=data_dir),
     )
     async with stdio_client(params) as (reader, writer):
-        async with ClientSession(reader, writer) as session:
+        async with ClientSession(
+            reader, writer, read_timeout_seconds=timedelta(seconds=timeout),
+        ) as session:
             await session.initialize()
+            listed = await session.list_tools()
+            tool_names = sorted(tool.name for tool in listed.tools)
+            required_tools = {
+                "comsol_status", "comsol_connect", "model_discover",
+                "model_attach", "comsol_api_read", "comsol_api_write",
+                "model_save", "model_remove",
+            }
+            missing_tools = sorted(required_tools - set(tool_names))
+            if missing_tools:
+                raise AcceptanceFailure("mcp_list_tools", "Required MCP tools are missing.", missing_tools)
+            initial_status = await call_mcp(session, "comsol_status", {}, timeout)
+            if initial_status.get("connected") is not False:
+                raise AcceptanceFailure("mcp_status", "Expected a disconnected fresh MCP process.", initial_status)
+            stage_record(report, "MCP 初始化、列工具与状态", "真实 stdio 客户端加载工具并调用 comsol_status。",
+                         tool_count=len(tool_names), required_tools=sorted(required_tools),
+                         status=initial_status)
+
             connected = await call_mcp(
                 session, "comsol_connect", {"port": port, "host": "localhost"}, timeout,
             )
             assert_result("connect", connected, success=True)
             if connected.get("session_mode") != "shared-external":
                 raise AcceptanceFailure("connect", "Expected shared-external connection.", connected)
+            connected_status = await call_mcp(session, "comsol_status", {}, timeout)
+            if (connected_status.get("connected") is not True
+                    or connected_status.get("server_port") != port):
+                raise AcceptanceFailure("mcp_status_connected", "Connected status differs from the temporary Server.", connected_status)
             owner_state = await client_a.state()
             if not owner_state.get("exists") or owner_state.get("value") != "1":
                 raise AcceptanceFailure("client_a_ownership", "Client A did not retain its model.", owner_state)
@@ -591,6 +624,14 @@ async def run_mcp_flow(
 
             steps = [{"method": "param", "args": []}]
             check = {"steps": steps, "method": "get", "args": ["handoff_value"]}
+            initial_read = await call_mcp(
+                session, "comsol_api_read",
+                {"model_name": model_tag, **check}, timeout,
+            )
+            assert_result("read_parameter_initial", initial_read, success=True)
+            if initial_read.get("value") != "1":
+                raise AcceptanceFailure("read_parameter_initial", "Initial API read differs from Client A.", initial_read)
+            stage_record(report, "通用 API 读取", "通过 MCP tools/call 读取参数初值 1。", result=initial_read)
             changed = await call_mcp(
                 session, "comsol_api_write",
                 {
@@ -605,13 +646,20 @@ async def run_mcp_flow(
             assert_result("write_parameter", changed, success=True)
             if changed.get("status") != "verified":
                 raise AcceptanceFailure("write_parameter", "API write did not verify.", changed)
+            final_read = await call_mcp(
+                session, "comsol_api_read",
+                {"model_name": model_tag, **check}, timeout,
+            )
+            assert_result("read_parameter_after_write", final_read, success=True)
+            if final_read.get("value") != "42":
+                raise AcceptanceFailure("read_parameter_after_write", "Final API read differs from verified write.", final_read)
             report["handoff_report"] = await complete_tool_report(session, changed, timeout)
             after_write = await client_a.state()
             if after_write.get("value") != "42":
                 raise AcceptanceFailure("write_parameter", "Client A did not read the expected value.", after_write)
             report["values"]["after_write"] = after_write["value"]
             stage_record(report, "执行与回读", "参数由 1 改为 42，工具验证与 Client A 回读一致。",
-                         result=changed, client_a=after_write)
+                         result=changed, mcp_read=final_read, client_a=after_write)
 
             saved = await call_mcp(
                 session, "model_save",
@@ -650,15 +698,40 @@ async def run_mcp_flow(
             assert_result("reconnect", reconnected, success=True)
             reattached = await call_mcp(session, "model_attach", {"model_tag": model_tag}, timeout)
             assert_result("reattach", reattached, success=True)
-            removed = await call_mcp(session, "model_remove", {"model_name": model_tag}, timeout)
-            assert_result("remove", removed, success=True)
+            retained = await call_mcp(session, "model_remove", {"model_name": model_tag}, timeout)
+            assert_result("remove_shared", retained, success=False)
+            if (retained.get("write_returned") is not True
+                    or retained.get("tag_present_after") is not True
+                    or retained.get("server_model_retained") is not True):
+                raise AcceptanceFailure("remove_shared", "Expected COMSOL to retain Client A's model.", retained)
+            owner_state = await client_a.state()
+            if not owner_state.get("exists"):
+                raise AcceptanceFailure("remove_shared", "Client A unexpectedly lost its model.", owner_state)
+            stage_record(report, "MCP 撤销共享模型使用", "COMSOL 保留仍由 Client A 使用的模型。",
+                         result=retained, client_a=owner_state)
+
+            final_state = await client_a.remove()
+            if final_state.get("exists"):
+                raise AcceptanceFailure("remove", "Client A still sees its model after removing it.", final_state)
+            stage_record(report, "创建方删除临时模型", "Client A 作为最后一个使用者删除模型并核验 tag 消失。",
+                         client_a=final_state)
             final_state = await client_a.state()
             if final_state.get("exists"):
-                raise AcceptanceFailure("remove", "Client A still sees the explicitly removed model.", final_state)
+                raise AcceptanceFailure("remove", "Client A model reappeared after removal.", final_state)
             report["model_removed"] = True
             report["model"]["final_exists"] = False
-            stage_record(report, "显式删除临时模型", "按同一 tag 删除并核验模型已不存在。",
-                         result=removed, client_a=final_state)
+
+            cleanup_tag = f"mcp_cleanup_{uuid.uuid4().hex[:12]}"
+            created = await call_mcp(session, "model_create",
+                                     {"model_tag": cleanup_tag, "label": "MCP removal check"}, timeout)
+            assert_result("create_cleanup_model", created, success=True)
+            report["cleanup_model_tag"] = cleanup_tag
+            removed = await call_mcp(session, "model_remove", {"model_name": cleanup_tag}, timeout)
+            assert_result("remove_cleanup_model", removed, success=True)
+            if removed.get("tag_present_after") is not False:
+                raise AcceptanceFailure("remove_cleanup_model", "MCP-owned model tag remains on Server.", removed)
+            stage_record(report, "MCP 删除自建模型", "无其他客户端使用时，Server tag 立即消失。",
+                         created=created, removed=removed)
             disconnected = await call_mcp(session, "comsol_disconnect", {}, timeout)
             assert_result("final_disconnect", disconnected, success=True)
 
@@ -682,6 +755,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         },
         "saved_file": None,
         "model_removed": False,
+        "cleanup_model_tag": None,
         "audit": {},
         "stages": [],
         "cleanup": {
@@ -823,6 +897,7 @@ async def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
             audit = verify_audit(
                 read_audit_records(data_dir),
                 model_tag=str(model["tag"]),
+                cleanup_model_tag=str(report["cleanup_model_tag"]),
             )
             report["audit"] = audit
             stage_record(

@@ -33,14 +33,19 @@ python3 scripts/bootstrap.py
 .venv/bin/comsol-mcp-doctor
 ```
 
+If the Python-supplied virtual environment has an older pip that cannot install
+this `pyproject.toml` project in editable mode, rerun bootstrap with
+`--upgrade-pip`. Python 3.10.2 with pip 21.2.4 requires this on macOS.
+
 Windows x64: the repository includes a Python 3.14 installer and the complete runtime dependency bundle. From the repository root:
 
-```powershell
+```cmd
 powershell -NoProfile -File .\scripts\install_windows.ps1
 ```
 
 The installer reuses or installs Python, creates the virtual environment, installs
-the local wheels, and checks dependency consistency and MCP tool loading. Follow
+the local wheels, checks dependencies, writes client configuration and runs a real
+MCP communication check. Follow
 the [Windows initialization task](docs/initialize-windows.md) to configure COMSOL
 and your MCP client. It can be handed directly to Employee Assistant and includes
 instructions for obtaining missing installation materials.
@@ -53,6 +58,25 @@ Development dependencies are optional: `python scripts/bootstrap.py --online --d
 Online installation supports `--index-url` for a company mirror and `--cert` for
 a CA certificate bundle. Windows defaults to the local runtime bundle; other
 platforms use online installation.
+
+### Check real MCP communication
+
+Installation runs this check automatically. To repeat it after updating the code,
+run this from the repository directory in Windows CMD:
+
+```cmd
+.venv\Scripts\python.exe scripts\check_connection.py --mode mcp
+```
+
+The official MCP SDK initializes the server, lists tools and calls `comsol_status`;
+COMSOL does not need to be running. Reports under
+`.comsol-mcp-data/connection-check/` record versions, timings, raw responses and
+stderr. On macOS / Linux, use `.venv/bin/python`.
+
+See [connection checks](docs/connection-check.md) for COMSOL installation
+discovery, connecting to an existing Server, and comparing old and new source
+with the same Python environment. After this check passes, verify the Employee
+Assistant's actual MCP connection using the same launch environment.
 
 ## Connect Employee Assistant
 
@@ -103,7 +127,7 @@ workbench/
 │   ├── tools/          Agent-facing interfaces
 │   └── core/           Session, API, inspection, solver and report implementations
 ├── tests/              Program tests; integration/ holds real COMSOL acceptance
-├── scripts/            Installation and release utilities
+├── scripts/            Installation, connection checks and release utilities
 ├── vendor/             Bundled Windows Python installer and dependency wheels
 ├── docs/               Architecture, GPT instructions and handoff conventions
 └── .agents/            Employee Assistant execution Skills

@@ -1,6 +1,8 @@
 # Windows 首次初始化任务
 
-把下面整段任务交给员工助手。仓库已带上 Python 安装程序和完整运行依赖；默认从本地安装。
+把下面整段任务交给员工助手。仓库已带上 Python 安装程序和完整运行依赖；默认从本地安装。本文命令使用 Windows CMD（命令提示符）语法。
+
+已有安装的电脑更新后可直接按 [连接自检](connection-check.md) 运行现成脚本，取得通信、安装发现和 Server 连接报告。
 
 ## 可直接转交的任务
 
@@ -10,17 +12,17 @@
 
 找到同时包含 `pyproject.toml`、`scripts/bootstrap.py` 的仓库根目录，在该目录执行：
 
-```powershell
+```cmd
 powershell -NoProfile -File .\scripts\install_windows.ps1
 ```
 
-这个入口会选择已有的标准版 Python 3.14 x64；缺少时使用仓库内的官方安装程序安装到当前用户目录。随后创建项目虚拟环境，从本地安装依赖，检查依赖关系和 MCP 工具加载，并生成 `.comsol-mcp-data/mcp-client.example.json`。
+这个入口会选择已有的标准版 Python 3.14 x64；缺少时使用仓库内的官方安装程序安装到当前用户目录。随后创建项目虚拟环境，从本地安装依赖，检查依赖关系，生成 `.comsol-mcp-data/mcp-client.example.json`，最后自动运行真实 MCP 通信自检。
 
 Python 与依赖的来源、版本、文件名和 SHA-256 都在 `vendor/windows-cp314/manifest.json`。材料缺失时脚本会按清单中的官方链接补下载。若下载受公司网络限制，使用公司可用的软件源或下载方式，按清单取得同名文件、核对 SHA-256、放回对应位置，再运行初始化。完整仓库正常安装时无需访问 PyPI。
 
 如果 PowerShell 脚本执行受到限制，使用已有的 Python 3.14 x64 执行等价的安装命令：
 
-```powershell
+```cmd
 py -3.14 scripts/bootstrap.py --offline
 ```
 
@@ -28,11 +30,19 @@ py -3.14 scripts/bootstrap.py --offline
 
 若已有 `.venv` 使用了其他版本的 Python，另建本项目环境：
 
-```powershell
+```cmd
 powershell -NoProfile -File .\scripts\install_windows.ps1 -Venv .venv-win314
 ```
 
 后续使用初始化输出的 Python 路径和客户端配置。
+
+安装入口已自动运行通信自检。更新代码或需要重试时，用该 Python 重新运行；默认环境的命令为：
+
+```cmd
+.venv\Scripts\python.exe scripts\check_connection.py --mode mcp
+```
+
+脚本使用官方 MCP SDK 初始化服务、列工具并调用 `comsol_status`，不启动 COMSOL 或 JVM。未连接时返回 `connected: false` 是正常结果；检查通过后继续配置安装与连接。失败时返回生成的报告和错误日志位置，按 [连接自检](connection-check.md) 定位首个失败步骤。
 
 ### 2. 找到本机 COMSOL
 
@@ -42,26 +52,41 @@ COMSOL 软件和许可证由公司提供。尚未安装时，向用户取得公�
 
 确认安装位置后，在本次进程设置：
 
-```powershell
-$comsolRoot = '<实际的 Multiphysics 目录>'
-$comsolVersion = '<所选版本，例如 6.4>'
-$env:COMSOL_MCP_COMSOL_ROOT = $comsolRoot
-$env:COMSOL_MCP_COMSOL_VERSION = $comsolVersion
-$env:JAVA_HOME = Join-Path $comsolRoot 'java\win64\jre'
-$env:PATH = (Join-Path $comsolRoot 'bin\win64') + ';' + $env:PATH
+```cmd
+set "COMSOL_MCP_COMSOL_ROOT=E:\COMSOL\6.4\COMSOL64\Multiphysics"
+set "COMSOL_MCP_COMSOL_VERSION=6.4"
+set "JAVA_HOME=%COMSOL_MCP_COMSOL_ROOT%\java\win64\jre"
+set "PATH=%COMSOL_MCP_COMSOL_ROOT%\bin\win64;%PATH%"
 ```
 
-从初始化生成的配置中取得 Python 路径，运行：
+示例中的路径和版本替换为本机实际值。用初始化输出的 Python 运行环境诊断和 MPh 安装发现；默认环境的命令为：
 
-```powershell
-$config = Get-Content .\.comsol-mcp-data\mcp-client.example.json -Raw | ConvertFrom-Json
-$python = $config.mcpServers.comsol.command
-& $python -m src.doctor --version $comsolVersion --json
+```cmd
+.venv\Scripts\python.exe -m src.doctor --version "%COMSOL_MCP_COMSOL_VERSION%" --json
+.venv\Scripts\python.exe scripts\check_connection.py --mode discovery --comsol-root "%COMSOL_MCP_COMSOL_ROOT%"
 ```
 
 `COMSOL_MCP_COMSOL_ROOT` 用于项目路径检查；将 COMSOL 的可执行文件目录加入 MCP 进程的 `PATH`，让 MPh 实际发现同一个安装位置。配置只需作用于项目进程。
 
-### 3. 接入当前 MCP 客户端
+### 3. 验证 Server 连接
+
+已有 COMSOL Server 时，用它的真实地址和端口执行连接自检。以本机 `2036` 端口为例：
+
+```cmd
+.venv\Scripts\python.exe scripts\check_connection.py --mode connect --host localhost --port 2036 --comsol-root "%COMSOL_MCP_COMSOL_ROOT%"
+```
+
+脚本依次检查 MCP 调用、安装发现、连接状态和 Server 模型列表。模型列表为空也可以证明读取成功。测试使用已有 Server，报告默认保存在 `.comsol-mcp-data/connection-check/`。
+
+尚未启动 Server 时，可在单独的 CMD 窗口运行下面的命令，并保持窗口打开：
+
+```cmd
+"E:\COMSOL\6.4\COMSOL64\Multiphysics\bin\win64\comsolmphserver.exe" -port 2036 -multi on
+```
+
+替换为实际安装路径，等待提示开始监听后，回到原窗口执行连接自检。`-multi on` 让 Server 在测试客户端断开后继续运行，供 Desktop 和员工助手连接。
+
+### 4. 接入当前 MCP 客户端
 
 以 `.comsol-mcp-data/mcp-client.example.json` 为基础，按当前客户端的配置格式填写启动程序、参数和工作目录。把上一步的 `COMSOL_MCP_COMSOL_ROOT`、`COMSOL_MCP_COMSOL_VERSION`、`JAVA_HOME` 和完整 `PATH` 加入该 MCP 进程的环境变量。生成的是通用参考格式，字段以客户端实际支持的格式为准。
 
@@ -71,15 +96,15 @@ $python = $config.mcpServers.comsol.command
 ["-c", "import os, runpy, sys; os.chdir(sys.argv[1]); runpy.run_module('src.server', run_name='__main__')", "<仓库绝对路径>"]
 ```
 
-重启该 MCP 连接，从客户端取得实际工具列表，调用 `comsol_status`。已有 COMSOL Server 时用它的真实地址和端口调用 `comsol_connect`；需要新开会话时调用 `comsol_start`，明确传入所选 `version`。连接后调用 `model_discover`，确认能够读取 Server 的模型列表。空列表也可以证明读取成功。
+重启该 MCP 连接，从员工助手取得实际工具列表，调用 `comsol_status`，再用上一步的地址和端口调用 `comsol_connect`。连接后调用 `model_discover`，确认能够读取 Server 的模型列表。自检脚本与员工助手分别启动 MCP 进程，因此两边的连接结果分别记录。
 
-### 4. 返回一份初始化结果
+### 5. 返回一份初始化结果
 
 请集中返回：
 
 - Python 路径与版本、最终依赖版本清单（用项目 Python 执行 `-m pip list --format=json`）。
 - COMSOL 版本与路径、客户端实际使用的启动配置；隐藏凭据。
-- 安装检查、MCP 工具调用、COMSOL 连接及模型发现各自的结果。
+- 安装检查、自检脚本、员工助手实际 MCP 连接各自的结果；附自检报告路径。
 - 未完成步骤的命令、原始输出或工具返回，以及下一步所缺的信息。
 - 创建或修改的本地配置文件路径。
 

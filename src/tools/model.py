@@ -238,6 +238,23 @@ def register_model_tools(mcp: FastMCP) -> None:
             result["tag_present_after"] = record.tag in session_manager.server_model_tags()
             if not result["tag_present_after"]:
                 session_manager.unregister_model(record.tag)
+            elif result["write_returned"]:
+                # ModelUtil.remove() only relinquishes this client's use when
+                # another client still holds the model.  The Server tag remains.
+                session_manager.unregister_model(record.tag)
+                result["server_model_retained"] = True
+                observed_tags, observer_error = session_manager._observer_state()
+                result["used_by_other_clients"] = (
+                    record.tag in observed_tags if observer_error is None else None
+                )
+                if observer_error:
+                    result["observer_check_error"] = observer_error
+                result["error"] = (
+                    "COMSOL retained the model because another client still uses it; "
+                    "that client must remove the model before its Server tag disappears."
+                    if result["used_by_other_clients"] is True else
+                    "COMSOL returned from remove(), but the model tag remains on Server."
+                )
             result["success"] = result["write_returned"] and not result["tag_present_after"]
         except Exception as exc:
             result["readback_error"] = f"{type(exc).__name__}: {exc}"

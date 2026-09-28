@@ -32,17 +32,33 @@ python3 scripts/bootstrap.py
 .venv/bin/comsol-mcp-doctor
 ```
 
+如果 Python 自带虚拟环境中的 pip 版本较旧，无法以可编辑模式安装本项目的
+`pyproject.toml`，加 `--upgrade-pip` 重跑初始化。本机 macOS 的 Python 3.10.2
+与 pip 21.2.4 需要此选项。
+
 Windows x64：仓库已带上 Python 3.14 安装程序和完整运行依赖。在仓库根目录执行：
 
-```powershell
+```cmd
 powershell -NoProfile -File .\scripts\install_windows.ps1
 ```
 
-安装入口会复用或安装 Python、建立虚拟环境、从本地安装依赖，并检查 MCP 工具加载。随后按 [Windows 首次初始化任务](docs/initialize-windows.md) 配置 COMSOL 和客户端；该文档可以整段交给员工助手执行，包含缺失材料的下载方法。
+安装入口会复用或安装 Python、建立虚拟环境、从本地安装依赖、生成客户端配置，并自动运行真实 MCP 通信自检。随后按 [Windows 首次初始化任务](docs/initialize-windows.md) 配置 COMSOL 和客户端；该文档可以整段交给员工助手执行，包含缺失材料的下载方法。
 
 `comsol-mcp-doctor` 检查 Python、依赖、COMSOL 安装目录和 Java；运行该命令无需 COMSOL License。初始化生成的 `.comsol-mcp-data/mcp-client.example.json` 包含本机启动路径，可用于不同 MCP 客户端。
 
 运行依赖默认从本地材料安装（Windows）或包索引安装（其他系统）。开发工具使用 `python scripts/bootstrap.py --online --dev`；联网安装可用 `--index-url` 指定公司镜像、用 `--cert` 指定 CA 证书文件。
+
+### 验证真实 MCP 通信
+
+安装时会自动自检。更新代码后，可在 Windows CMD 的仓库目录重新执行：
+
+```cmd
+.venv\Scripts\python.exe scripts\check_connection.py --mode mcp
+```
+
+脚本通过官方 MCP SDK 完成初始化、列工具和状态查询，无需启动 COMSOL。报告默认保存在 `.comsol-mcp-data/connection-check/`，包含版本、耗时、原始返回与错误日志。macOS / Linux 将 Python 路径换成 `.venv/bin/python`。
+
+COMSOL 安装发现、连接已有 Server、同一环境下的新旧代码对照，以及可直接交给员工助手的任务，见 [连接自检](docs/connection-check.md)。通过自检后，再用相同环境验证员工助手中的实际 MCP 连接。
 
 ## 接入员工助手
 
@@ -99,7 +115,7 @@ workbench/
 │   ├── tools/          Agent 可调用的接口
 │   └── core/           会话、API、信息采集、后台求解和报告实现
 ├── tests/              程序测试；integration/ 保存真实 COMSOL 验收
-├── scripts/            安装与发布辅助程序
+├── scripts/            安装、连接自检与发布辅助程序
 ├── vendor/             随仓库提供的 Windows Python 和依赖安装包
 ├── docs/               架构、GPT instructions、任务与报告约定
 └── .agents/            员工助手使用的执行 Skill

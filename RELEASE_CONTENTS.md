@@ -5,24 +5,40 @@
 | 用途 | 入口 | 使用时机 |
 | --- | --- | --- |
 | 安装环境诊断 | `comsol-mcp-doctor` | 首次安装或排查启动问题 |
+| MCP 通信自检 | `python scripts/check_connection.py --mode mcp` | 检查真实 stdio 握手、工具列表和状态调用，无需启动 COMSOL |
+| 已有 Server 连接自检 | `python scripts/check_connection.py --mode connect` | 验证连接已有 COMSOL Server、读取状态和发现模型 |
 | 程序测试 | `python -m pytest` | 修改代码后，默认跳过需要 COMSOL 的真实验收 |
-| 真实 COMSOL 验收 | `python -m pytest -m integration tests/integration` | 在有 COMSOL 和可用 License 的公司电脑上 |
+| 双客户端真实验收 | `python -m pytest -m integration tests/integration` | 在有 COMSOL 和可用 License 的电脑上验证模型交接 |
 | 发布内容检查 | `python scripts/release_audit.py` | 发布源码或构建安装包前 |
 
-真实验收启动临时 Server 和两个客户端，验证模型发现、接管、参数修改与回读、保存副本、解除登记、断开和删除。场景实现集中在 `tests/integration/handoff_runner.py`；需要保留 JSON 和 Markdown 验收记录时，可以直接运行：
+双客户端验收启动临时 Server 和两个客户端，验证模型发现、接管、参数修改与回读、保存副本、解除登记、断开和删除。场景实现集中在 `tests/integration/handoff_runner.py`；需要保留 JSON 和 Markdown 验收记录时，可以直接运行：
 
 ```bash
 python -m tests.integration.handoff_runner --report-dir /ABSOLUTE/PATH/TO/acceptance-reports
 ```
 
-两种运行方式使用同一场景实现。通过员工助手完成 GPT 任务往返、分页和求解的人工验收，见 [公司电脑人工验收](docs/task-protocol.md#公司电脑人工验收)。
+上述两种运行方式使用同一场景实现。
+
+热模型验收是独立入口，建立一维导热模型，验证几何、网格、求解和中点温度。它使用临时 Server，需要 COMSOL 和可用 License；单独运行：
+
+```bash
+python -m tests.integration.thermal_runner --report-dir /ABSOLUTE/PATH/TO/acceptance-reports
+```
+
+`pytest -m integration` 当前运行双客户端场景，热模型通过上述命令执行。通过员工助手完成 GPT 任务往返、分页和求解的人工验收，见 [公司电脑人工验收](docs/task-protocol.md#公司电脑人工验收)。
+
+## 已验证范围
+
+2026-09-28 在 Apple Silicon Mac、Python 3.10.2、MCP 1.30.0、MPh 1.4.0 和 COMSOL 6.4 上完成真实 stdio 验收：状态与连接、模型交接、参数修改回读、保存副本及模型生命周期均通过；独立导热场景完成建模、网格与求解，中点温度约为 350 K。
+
+本轮同时修正了共享模型删除后的状态反馈：其他客户端仍使用模型时，COMSOL 保留 Server 模型；最后一个使用者删除后才核验 tag 消失。公司 Windows 上的新版通信、连接及员工助手完整任务链仍待验收。原始报告和机器环境记录在本地保存。
 
 ## 发布内容
 
 - `src/`：MCP 接口、连接与模型管理、通用 API、计算和文件操作、事实报告、安装环境诊断。
 - `AGENTS.md`、`.agents/skills/`、`docs/`：员工助手执行规则、Skill、GPT instructions 和交接约定。
 - `tests/`：程序测试和真实 COMSOL 验收。
-- `scripts/`：安装与发布辅助程序。
+- `scripts/`：安装、通信与连接自检、发布辅助程序。
 - `vendor/windows-cp314/`：随仓库及源码包分发的 Windows Python 安装程序、运行依赖、版本与校验清单。
 - 项目配置、中英文 README、许可证和上游来源说明。
 

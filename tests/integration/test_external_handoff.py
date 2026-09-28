@@ -57,7 +57,8 @@ def test_real_two_client_external_model_handoff(tmp_path):
         "after_detach": "42",
         "after_mcp_disconnect": "42",
     }
-    assert report["audit"]["required_events"] == 3
+    assert report["audit"]["required_events"] == 4
+    assert report["cleanup_model_tag"].startswith("mcp_cleanup_")
     assert "handoff_value" in report["handoff_report"]
     assert "42" in report["handoff_report"]
     assert report["cleanup"] == {

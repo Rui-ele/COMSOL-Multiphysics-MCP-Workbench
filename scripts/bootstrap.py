@@ -14,12 +14,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_ROOT = PROJECT_ROOT / "vendor" / "windows-cp314"
-MCP_CHECK = (
-    "import asyncio; from src.server import mcp, register_all_tools; "
-    "register_all_tools(); tools = asyncio.run(mcp.list_tools()); "
-    "assert any(t.name == 'comsol_status' for t in tools); "
-    "print('MCP tools loaded:', len(tools))"
-)
 
 
 def verify_bundle(bundle: Path) -> None:
@@ -188,7 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=True)
     venv_python = environment_python(venv)
     subprocess.run([str(venv_python), "-m", "pip", "check"], cwd=PROJECT_ROOT, env=env, check=True)
-    subprocess.run([str(venv_python), "-c", MCP_CHECK], cwd=PROJECT_ROOT, env=env, check=True, timeout=45)
     data_dir = PROJECT_ROOT / ".comsol-mcp-data"
     data_dir.mkdir(exist_ok=True)
     config_path = data_dir / "mcp-client.example.json"
@@ -198,6 +191,13 @@ def main(argv: list[str] | None = None) -> int:
     }}}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Installed COMSOL MCP Workbench in {venv}")
     print(f"Client configuration: {config_path}")
+    check = subprocess.run([
+        str(venv_python), str(PROJECT_ROOT / "scripts" / "check_connection.py"),
+        "--repo", str(PROJECT_ROOT), "--python", str(venv_python), "--mode", "mcp",
+    ], cwd=PROJECT_ROOT, env=env)
+    if check.returncode:
+        print("Dependencies installed; MCP communication check failed. See its report above.")
+        return 1
     print("Next: follow docs/initialize-windows.md to configure COMSOL and connect the client."
           if os.name == "nt" else f"Next: {venv_python} -m src.doctor")
     print("COMSOL connection and license have not been checked.")
