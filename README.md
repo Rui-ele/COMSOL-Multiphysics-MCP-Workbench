@@ -33,16 +33,26 @@ python3 scripts/bootstrap.py
 .venv/bin/comsol-mcp-doctor
 ```
 
-Windows:
+Windows x64: the repository includes a Python 3.14 installer and the complete runtime dependency bundle. From the repository root:
 
 ```powershell
-py scripts/bootstrap.py
-.venv\Scripts\comsol-mcp-doctor.exe
+powershell -NoProfile -File .\scripts\install_windows.ps1
 ```
 
-The installation diagnostic checks Python, dependencies, the COMSOL installation
-and Java. Use it during installation or startup troubleshooting; it requires no
-COMSOL license.
+The installer reuses or installs Python, creates the virtual environment, installs
+the local wheels, and checks dependency consistency and MCP tool loading. Follow
+the [Windows initialization task](docs/initialize-windows.md) to configure COMSOL
+and your MCP client. It can be handed directly to Employee Assistant and includes
+instructions for obtaining missing installation materials.
+
+The generated `.comsol-mcp-data/mcp-client.example.json` contains the actual local
+launch paths for a stdio MCP client. `comsol-mcp-doctor` checks Python, packages,
+COMSOL paths and Java without consuming a COMSOL license.
+
+Development dependencies are optional: `python scripts/bootstrap.py --online --dev`.
+Online installation supports `--index-url` for a company mirror and `--cert` for
+a CA certificate bundle. Windows defaults to the local runtime bundle; other
+platforms use online installation.
 
 ## Connect Employee Assistant
 
@@ -94,6 +104,7 @@ workbench/
 │   └── core/           Session, API, inspection, solver and report implementations
 ├── tests/              Program tests; integration/ holds real COMSOL acceptance
 ├── scripts/            Installation and release utilities
+├── vendor/             Bundled Windows Python installer and dependency wheels
 ├── docs/               Architecture, GPT instructions and handoff conventions
 └── .agents/            Employee Assistant execution Skills
 ```

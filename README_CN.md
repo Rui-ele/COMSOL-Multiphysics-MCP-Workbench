@@ -32,14 +32,17 @@ python3 scripts/bootstrap.py
 .venv/bin/comsol-mcp-doctor
 ```
 
-Windows：
+Windows x64：仓库已带上 Python 3.14 安装程序和完整运行依赖。在仓库根目录执行：
 
 ```powershell
-py scripts/bootstrap.py
-.venv\Scripts\comsol-mcp-doctor.exe
+powershell -NoProfile -File .\scripts\install_windows.ps1
 ```
 
-安装环境诊断检查 Python、依赖、COMSOL 安装目录和 Java，适用于首次安装或排查启动问题；运行该命令无需 COMSOL License。
+安装入口会复用或安装 Python、建立虚拟环境、从本地安装依赖，并检查 MCP 工具加载。随后按 [Windows 首次初始化任务](docs/initialize-windows.md) 配置 COMSOL 和客户端；该文档可以整段交给员工助手执行，包含缺失材料的下载方法。
+
+`comsol-mcp-doctor` 检查 Python、依赖、COMSOL 安装目录和 Java；运行该命令无需 COMSOL License。初始化生成的 `.comsol-mcp-data/mcp-client.example.json` 包含本机启动路径，可用于不同 MCP 客户端。
+
+运行依赖默认从本地材料安装（Windows）或包索引安装（其他系统）。开发工具使用 `python scripts/bootstrap.py --online --dev`；联网安装可用 `--index-url` 指定公司镜像、用 `--cert` 指定 CA 证书文件。
 
 ## 接入员工助手
 
@@ -97,6 +100,7 @@ workbench/
 │   └── core/           会话、API、信息采集、后台求解和报告实现
 ├── tests/              程序测试；integration/ 保存真实 COMSOL 验收
 ├── scripts/            安装与发布辅助程序
+├── vendor/             随仓库提供的 Windows Python 和依赖安装包
 ├── docs/               架构、GPT instructions、任务与报告约定
 └── .agents/            员工助手使用的执行 Skill
 ```

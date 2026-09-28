@@ -1,5 +1,6 @@
 # Python environments and build products
 .venv/
+.venv-*/
 venv/
 __pycache__/
 *.py[cod]
@@ -10,6 +11,7 @@ __pycache__/
 htmlcov/
 build/
 dist/
+*.download
 
 # Editors and operating systems
 .DS_Store

@@ -23,11 +23,12 @@ python -m tests.integration.handoff_runner --report-dir /ABSOLUTE/PATH/TO/accept
 - `AGENTS.md`、`.agents/skills/`、`docs/`：员工助手执行规则、Skill、GPT instructions 和交接约定。
 - `tests/`：程序测试和真实 COMSOL 验收。
 - `scripts/`：安装与发布辅助程序。
+- `vendor/windows-cp314/`：随仓库及源码包分发的 Windows Python 安装程序、运行依赖、版本与校验清单。
 - 项目配置、中英文 README、许可证和上游来源说明。
 
 源码包包含以上维护文件；wheel 安装运行代码和命令入口。员工助手所需的协作资料随仓库或源码包提供。
 
-模型、COMSOL 软件与许可证、官方手册、日志、运行报告、缓存和机器配置在本地保存。发布检查会检查这类文件、过大的文件和开发机器路径。
+模型、COMSOL 软件与许可证、官方手册、日志、运行报告、缓存和机器配置在本地保存。发布检查会检查这类文件、过大的文件和开发机器路径。vendor 中清单登记的安装材料按 SHA-256 核对后允许分发。
 
 ## 构建安装包
 

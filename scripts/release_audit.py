@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,8 @@ def candidate_files(root: Path) -> list[Path]:
         relative = path.relative_to(root)
         if any(part in IGNORED_DIRECTORIES for part in relative.parts):
             continue
+        if any(part.startswith(".venv-") for part in relative.parts):
+            continue
         if any(part.endswith(".egg-info") for part in relative.parts):
             continue
         output.append(path)
@@ -55,6 +58,25 @@ def candidate_files(root: Path) -> list[Path]:
 
 def audit_tree(root: Path) -> dict[str, Any]:
     findings: list[dict[str, str]] = []
+    bundled_files: dict[str, str] = {}
+    bundle = root / "vendor" / "windows-cp314"
+    manifest_path = bundle / "manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for item in [manifest["python_installer"], *manifest["packages"]]:
+            path = (bundle / item["file"]).resolve()
+            if not path.is_relative_to(bundle.resolve()):
+                findings.append({"path": item["file"], "reason": "invalid bundle path"})
+                continue
+            relative = path.relative_to(root.resolve()).as_posix()
+            if not path.is_file():
+                findings.append({"path": relative, "reason": "missing bundle artifact"})
+            elif hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+                findings.append({"path": relative, "reason": "bundle checksum mismatch"})
+            elif path.stat().st_size > 95 * 1024 * 1024:
+                findings.append({"path": relative, "reason": "bundle artifact exceeds 95 MiB"})
+            else:
+                bundled_files[relative] = item["sha256"]
     home = str(Path.home())
     development_checkout = os.environ.get(
         "COMSOL_MCP_DEVELOPMENT_CHECKOUT",
@@ -68,7 +90,7 @@ def audit_tree(root: Path) -> dict[str, Any]:
         suffixes = {suffix.lower() for suffix in path.suffixes}
         if suffixes & FORBIDDEN_SUFFIXES:
             findings.append({"path": str(relative), "reason": "forbidden file type"})
-        if path.stat().st_size > MAX_FILE_BYTES:
+        if path.stat().st_size > MAX_FILE_BYTES and relative.as_posix() not in bundled_files:
             findings.append({"path": str(relative), "reason": "file exceeds 5 MiB"})
         if path.stat().st_size <= 2 * 1024 * 1024:
             try:
