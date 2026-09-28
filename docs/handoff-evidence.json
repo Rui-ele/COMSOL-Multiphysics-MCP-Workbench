@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-09-28",
+  "runtime_source_commit": "6eb7e9488afd18b00436bf51d17c432afd0b9ae8",
+  "scope": "精选事实摘要；不是完整原始日志。Windows事实来自用户转交的公司电脑CMD输出和自检报告，Mac事实来自本地真实验收。",
+  "confirmed_finding": "Windows直接调用MPh和项目连接函数均成功；通过MCP stdio调用连接超时。问题范围缩小到MCP stdio执行环境及其与连接调用的交互。",
+  "unresolved": "尚无SSE/HTTP对照结果，具体阻塞机制未确定。",
+  "mac": {
+    "environment": {
+      "platform": "macOS / Apple Silicon",
+      "python": "3.10.2",
+      "mcp": "1.30.0",
+      "mph": "1.4.0",
+      "comsol": "6.4"
+    },
+    "verification_note": "修复后的工作树通过验收，随后运行代码作为6eb7e94提交。",
+    "unit_tests": {
+      "passed": 82,
+      "deselected": 1
+    },
+    "model_handoff": {
+      "success": true,
+      "started_at": "2026-09-28T17:19:34+09:00",
+      "finished_at": "2026-09-28T17:19:46+09:00",
+      "duration_seconds": 11.75,
+      "values": {
+        "initial": "1",
+        "after_write": "42",
+        "after_detach": "42",
+        "after_mcp_disconnect": "42"
+      },
+      "model_removed": true,
+      "failed_stage": null,
+      "error": null,
+      "cleanup": {
+        "server_running_after_mcp_disconnect": true,
+        "client_a_stopped": true,
+        "server_stopped": true
+      }
+    },
+    "thermal": {
+      "success": true,
+      "started_at": "2026-09-28T17:20:08.871940+09:00",
+      "finished_at": "2026-09-28T17:20:26.557707+09:00",
+      "duration_seconds": 17.686,
+      "temperature_center_K": 349.9999999999985,
+      "failed_stage": null,
+      "error": null
+    },
+    "thermal_cleanup": {
+      "model_removed": true,
+      "mcp_disconnected": true,
+      "server_stopped": true
+    },
+    "source_report_filenames": [
+      "20260928_171946_external_model_handoff.json",
+      "20260928_172026_thermal_acceptance.json"
+    ],
+    "exit_warning": "MPh退出回调提示stdout已关闭；两项验收均以退出码0结束，测试资源清理确认通过。"
+  },
+  "windows": {
+    "environment": {
+      "python_version": "3.14.5",
+      "platform": "Windows-11-10.0.26100-SP0",
+      "architecture": "AMD64",
+      "packages": {
+        "mcp": "1.30.0",
+        "anyio": "4.15.1",
+        "mph": "1.4.0",
+        "JPype1": "1.7.1",
+        "pydantic": "2.13.5",
+        "numpy": "2.5.3"
+      },
+      "source_revision": "6eb7e9488afd18b00436bf51d17c432afd0b9ae8"
+    },
+    "comsol": {
+      "version": "6.4",
+      "build": "343",
+      "host": "localhost",
+      "port": 2036
+    },
+    "older_comparison": [
+      {
+        "commit": "f1f551a6013b8b11c48ccd0de2ee6c3d18870759",
+        "mcp_status": "passed",
+        "source": "相同自检脚本的CMD输出"
+      },
+      {
+        "commit": "6d84e8652c997d58802a730b1f7a644f51a1c965",
+        "mcp_status": "timeout",
+        "source": "恢复该版本源码后重测的CMD输出"
+      }
+    ],
+    "current_stdio": {
+      "report_directory_name": "20260928_172746_connect_940930b5",
+      "status_before_connect": "passed",
+      "status_source": "CMD阶段输出",
+      "parsed_stage_excerpts": [
+        {
+          "stage": "mcp_transport",
+          "status": "passed",
+          "time": "2026-09-28T08:27:46.826782+00:00"
+        },
+        {
+          "stage": "initialize",
+          "status": "passed",
+          "time": "2026-09-28T08:27:47.565673+00:00",
+          "duration_seconds": 0.7381496001034975,
+          "response_received": true
+        },
+        {
+          "stage": "tools_list",
+          "status": "passed",
+          "time": "2026-09-28T08:27:47.571294+00:00",
+          "duration_seconds": 0.004793999716639519,
+          "response_received": true
+        },
+        {
+          "stage": "comsol_discovery",
+          "status": "passed",
+          "time": "2026-09-28T08:27:47.927076+00:00",
+          "duration_seconds": 0.3451886000111699,
+          "response_received": true
+        },
+        {
+          "stage": "comsol_connect",
+          "status": "failed",
+          "time": "2026-09-28T08:29:17.938551+00:00",
+          "duration_seconds": 90.00348760001361,
+          "response_received": false,
+          "error": "TimeoutError: "
+        },
+        {
+          "stage": "mcp_shutdown",
+          "status": "failed",
+          "time": "2026-09-28T08:29:19.522343+00:00",
+          "duration_seconds": 1.579900799319148
+        },
+        {
+          "stage": "worker",
+          "status": "failed",
+          "time": "2026-09-28T08:29:19.526989+00:00"
+        }
+      ],
+      "server_stderr_tail": [
+        "INFO:mph:Starting Java virtual machine.",
+        "INFO:mph:Java virtual machine has started.",
+        "INFO:mph:Connecting to server \"localhost\" at port 2036."
+      ],
+      "server_observation": "超时清理附近，Server控制台记录API客户端登录后断开；账号及主机标识省略。",
+      "extraction_note": "收到的是粘贴报告，部分嵌套JSON不完整；这里只保留可单独解析的阶段记录及明确的控制台输出。"
+    },
+    "direct_mph": {
+      "success": true,
+      "duration_seconds": 1.35,
+      "stdout": [
+        "BEFORE CONNECT",
+        "CONNECTED 1.35 s 6.4 2036",
+        "DISCONNECTED"
+      ]
+    },
+    "direct_project_session": {
+      "success": true,
+      "duration_seconds": 1.33,
+      "connected_result": {
+        "success": true,
+        "version": "6.4",
+        "cores": 10,
+        "standalone": false,
+        "session_mode": "shared-external",
+        "server_host": "localhost",
+        "server_port": 2036
+      },
+      "disconnect_result": {
+        "success": true,
+        "completed_stages": [
+          "disconnect_client"
+        ],
+        "message": "Disconnected from external COMSOL server; server left running."
+      }
+    },
+    "non_stdio_comparison": {
+      "status": "not_run_or_no_result_provided"
+    }
+  }
+}

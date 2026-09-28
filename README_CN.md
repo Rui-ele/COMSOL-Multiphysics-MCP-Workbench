@@ -1,5 +1,7 @@
 # COMSOL MCP Workbench
 
+当前交接状态与后续排查入口见 [排错定位与交接](docs/troubleshooting-handoff.md)：MacBook 已完成真实模型操作和求解；公司 Windows 的直接 Python 连接成功，MCP stdio 下的连接超时仍待解决。
+
 GPT 与你讨论技术方案，员工助手中的千问 Agent 执行 COMSOL 任务，你在两边转交完整任务和报告。
 
 **与 GPT 讨论 → 复制任务给员工助手 → 调用 MCP 操作 COMSOL → 报告贴回 GPT → 决定下一步。**

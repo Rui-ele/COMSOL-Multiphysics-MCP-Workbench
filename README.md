@@ -1,5 +1,7 @@
 # COMSOL MCP Workbench
 
+For the current handoff and investigation record, see [Troubleshooting and handoff (Chinese)](docs/troubleshooting-handoff.md). Real model operations and solving passed on MacBook. On the company Windows machine, direct Python connections work; connecting through MCP stdio still times out.
+
 GPT plans COMSOL tasks with the user. A Qwen Agent in the company's Employee
 Assistant executes them through MCP. The user transfers complete tasks and reports.
 

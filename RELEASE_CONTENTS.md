@@ -31,13 +31,17 @@ python -m tests.integration.thermal_runner --report-dir /ABSOLUTE/PATH/TO/accept
 
 2026-09-28 在 Apple Silicon Mac、Python 3.10.2、MCP 1.30.0、MPh 1.4.0 和 COMSOL 6.4 上完成真实 stdio 验收：状态与连接、模型交接、参数修改回读、保存副本及模型生命周期均通过；独立导热场景完成建模、网格与求解，中点温度约为 350 K。
 
-本轮同时修正了共享模型删除后的状态反馈：其他客户端仍使用模型时，COMSOL 保留 Server 模型；最后一个使用者删除后才核验 tag 消失。公司 Windows 上的新版通信、连接及员工助手完整任务链仍待验收。原始报告和机器环境记录在本地保存。
+本轮同时修正了共享模型删除后的状态反馈：其他客户端仍使用模型时，COMSOL 保留 Server 模型；最后一个使用者删除后才核验 tag 消失。公司 Windows 已通过新版 MCP 通信和安装发现检查，直接 Python 连接 COMSOL 也成功，MCP stdio 下的连接仍超时。原始报告和机器环境记录在本地保存。
 
 ### Windows 连接修正
 
 针对同一 Windows 环境中旧版状态调用通过、新版超时的结果，本版移除了工具报告中的 Git 子进程和工作区扫描。报告直接读取本地版本文件，工作区是否有改动由独立自检报告提供。
 
 连接和启动现在实际使用 `COMSOL_MCP_COMSOL_ROOT` 与 `COMSOL_MCP_COMSOL_VERSION`。这使员工助手与自检使用相同的安装配置。修正后在 Mac 重新验证了连接、参数写入回读、保存及导热求解；公司 Windows 的结果以实际调用为准。
+
+### 交接记录
+
+运行代码以 `6eb7e94` 为交接基准，后续交接提交仅补充文档和证据摘要。Windows 的最新对照结果、已修正事项和下一步最小实验见 [排错定位与交接](docs/troubleshooting-handoff.md)，机器可读摘要见 [验收与排错证据](docs/handoff-evidence.json)。
 
 ## 发布内容
 
