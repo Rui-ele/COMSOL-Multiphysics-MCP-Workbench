@@ -10,6 +10,7 @@ from typing import Literal, Optional
 import mph
 from jpype import JClass
 
+from .comsol_environment import configure_comsol_environment
 from .execution import ACTIVE_MODEL
 
 logger = logging.getLogger(__name__)
@@ -438,19 +439,21 @@ class SessionManager:
                 "error": f"Requested COMSOL server port is unavailable: {port}",
             }
 
-        if self._client is not None and version:
-            client_version = str(self._client.version)
-            if client_version != str(version):
-                return {
-                    "success": False,
-                    "error": (
-                        f"The MCP process already initialized COMSOL {client_version}. "
-                        f"Restart the MCP process before switching to COMSOL {version}."
-                    ),
-                }
-
-        stage = "start_server"
+        stage = "configure_environment"
         try:
+            version = configure_comsol_environment(version)
+            if self._client is not None and version:
+                client_version = str(self._client.version)
+                if client_version != str(version):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"The MCP process already initialized COMSOL {client_version}. "
+                            f"Restart the MCP process before switching to COMSOL {version}."
+                        ),
+                    }
+
+            stage = "start_server"
             self._server = mph.Server(
                 cores=cores,
                 version=version,
@@ -503,11 +506,14 @@ class SessionManager:
                 "error": "A managed COMSOL server is already running.",
             }
 
-        stage = "connect_client"
+        stage = "configure_environment"
         try:
             if self._client is None:
-                self._client = mph.Client(port=port, host=host)
+                version = configure_comsol_environment()
+                stage = "connect_client"
+                self._client = mph.Client(version=version, port=port, host=host)
             else:
+                stage = "connect_client"
                 self._client.connect(port, host)
             self._server_managed = False
             self._session_mode = "shared-external"

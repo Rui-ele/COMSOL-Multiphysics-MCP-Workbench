@@ -55,8 +55,6 @@ COMSOL 软件和许可证由公司提供。尚未安装时，向用户取得公�
 ```cmd
 set "COMSOL_MCP_COMSOL_ROOT=E:\COMSOL\6.4\COMSOL64\Multiphysics"
 set "COMSOL_MCP_COMSOL_VERSION=6.4"
-set "JAVA_HOME=%COMSOL_MCP_COMSOL_ROOT%\java\win64\jre"
-set "PATH=%COMSOL_MCP_COMSOL_ROOT%\bin\win64;%PATH%"
 ```
 
 示例中的路径和版本替换为本机实际值。用初始化输出的 Python 运行环境诊断和 MPh 安装发现；默认环境的命令为：
@@ -66,7 +64,7 @@ set "PATH=%COMSOL_MCP_COMSOL_ROOT%\bin\win64;%PATH%"
 .venv\Scripts\python.exe scripts\check_connection.py --mode discovery --comsol-root "%COMSOL_MCP_COMSOL_ROOT%"
 ```
 
-`COMSOL_MCP_COMSOL_ROOT` 用于项目路径检查；将 COMSOL 的可执行文件目录加入 MCP 进程的 `PATH`，让 MPh 实际发现同一个安装位置。配置只需作用于项目进程。
+MCP 在连接或启动 COMSOL 前，会将 `COMSOL_MCP_COMSOL_ROOT` 下的可执行文件目录加入本进程 `PATH`，并使用 `COMSOL_MCP_COMSOL_VERSION` 选择版本。MPh 从该安装的配置读取配套 Java 路径。配置只需作用于项目进程。
 
 ### 3. 验证 Server 连接
 
@@ -88,7 +86,7 @@ set "PATH=%COMSOL_MCP_COMSOL_ROOT%\bin\win64;%PATH%"
 
 ### 4. 接入当前 MCP 客户端
 
-以 `.comsol-mcp-data/mcp-client.example.json` 为基础，按当前客户端的配置格式填写启动程序、参数和工作目录。把上一步的 `COMSOL_MCP_COMSOL_ROOT`、`COMSOL_MCP_COMSOL_VERSION`、`JAVA_HOME` 和完整 `PATH` 加入该 MCP 进程的环境变量。生成的是通用参考格式，字段以客户端实际支持的格式为准。
+以 `.comsol-mcp-data/mcp-client.example.json` 为基础，按当前客户端的配置格式填写启动程序、参数和工作目录。把上一步的 `COMSOL_MCP_COMSOL_ROOT` 和 `COMSOL_MCP_COMSOL_VERSION` 加入该 MCP 进程的环境变量。生成的是通用参考格式，字段以客户端实际支持的格式为准。
 
 配置应写入客户端实际使用的位置；`.env` 本身不会被当前 MCP 入口自动加载。若客户端不支持工作目录字段，可将启动参数改为：
 

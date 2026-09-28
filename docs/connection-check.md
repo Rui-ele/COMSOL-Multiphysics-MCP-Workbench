@@ -75,6 +75,8 @@ git pull --ff-only
 
 自检通过说明脚本客户端的调用链可用。员工助手实际使用的 MCP 配置仍需验证：取得工具列表、调用状态查询、连接同一 Server 并发现模型。模型编辑与求解属于下一层验收，见 [维护与发布说明](../RELEASE_CONTENTS.md)。
 
+员工助手的 MCP 进程配置 `COMSOL_MCP_COMSOL_ROOT` 和 `COMSOL_MCP_COMSOL_VERSION` 后，正式连接会自动应用该安装位置。更新代码或环境配置后，重启员工助手中的 MCP 服务，使其加载本次修正。
+
 ## 其他系统与参数
 
 macOS / Linux 在仓库目录运行：

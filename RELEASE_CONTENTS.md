@@ -33,6 +33,12 @@ python -m tests.integration.thermal_runner --report-dir /ABSOLUTE/PATH/TO/accept
 
 本轮同时修正了共享模型删除后的状态反馈：其他客户端仍使用模型时，COMSOL 保留 Server 模型；最后一个使用者删除后才核验 tag 消失。公司 Windows 上的新版通信、连接及员工助手完整任务链仍待验收。原始报告和机器环境记录在本地保存。
 
+### Windows 连接修正
+
+针对同一 Windows 环境中旧版状态调用通过、新版超时的结果，本版移除了工具报告中的 Git 子进程和工作区扫描。报告直接读取本地版本文件，工作区是否有改动由独立自检报告提供。
+
+连接和启动现在实际使用 `COMSOL_MCP_COMSOL_ROOT` 与 `COMSOL_MCP_COMSOL_VERSION`。这使员工助手与自检使用相同的安装配置。修正后在 Mac 重新验证了连接、参数写入回读、保存及导热求解；公司 Windows 的结果以实际调用为准。
+
 ## 发布内容
 
 - `src/`：MCP 接口、连接与模型管理、通用 API、计算和文件操作、事实报告、安装环境诊断。
